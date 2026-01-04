@@ -3,7 +3,11 @@
 ![Windows Update](https://img.shields.io/badge/Windows%20Update-Driver%20Upgrade-blue?style=for-the-badge&logo=windows&logoColor=white)
 
 ## 📖 Description
-Ce script PowerShell **automatise la mise à jour des pilotes** en utilisant **Windows Update**. Il est conçu pour être **déployé via GPO ou Snapin FOG Project**, permettant une exécution **silencieuse et sans intervention utilisateur**.
+Ces scripts PowerShell **automatisent la mise à jour des pilotes** en utilisant **Windows Update**. Ils sont conçus pour être **déployés via GPO ou Snapin FOG Project**, permettant une exécution **silencieuse et sans intervention utilisateur**.
+
+**Scripts disponibles :**
+- `force_update_driversV2_pourGPO.ps1` : version orientée GPO avec transcript et nettoyage garanti.
+- `force_update_driversV2bis.ps1` : version interactive affichant la liste des pilotes détectés.
 
 ## 🔥 Fonctionnalités
 ✅ **Télécharge et installe automatiquement** les pilotes depuis Windows Update.  
@@ -11,76 +15,58 @@ Ce script PowerShell **automatise la mise à jour des pilotes** en utilisant **W
 ✅ **Génère un fichier log** (`C:\Windows\Temp\DriverUpdateLog.txt`) pour suivre les mises à jour.  
 ✅ **Exécution en arrière-plan** *(aucune interaction requise)*.  
 ✅ **Suppression du service Microsoft Update** après exécution pour garder un système propre.  
+✅ **Gestion d'erreurs stricte** (`Set-StrictMode`, `$ErrorActionPreference = 'Stop'`) pour éviter les échecs silencieux.  
 
 ---
 
-## 📜 **Script PowerShell**
+## 📜 **Extrait du script (GPO)**
 ```powershell
-# Définition du fichier log
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
 $LogFile = "C:\Windows\Temp\DriverUpdateLog.txt"
 Start-Transcript -Path $LogFile -Append -Force
 
 try {
-    Write-Output "🔍 Début du processus de mise à jour des pilotes via Windows Update..."
-
-    # Ajouter le service Microsoft Update pour inclure les drivers tiers
     $UpdateSvc = New-Object -ComObject Microsoft.Update.ServiceManager
-    $UpdateSvc.AddService2("7971f918-a847-4430-9279-4a52d1efe18d", 7, "") | Out-Null
+    $ServiceId = "7971f918-a847-4430-9279-4a52d1efe18d"
+    $UpdateSvc.AddService2($ServiceId, 7, "") | Out-Null
 
-    # Création de la session de mise à jour
     $Session = New-Object -ComObject Microsoft.Update.Session
     $Searcher = $Session.CreateUpdateSearcher()
-    $Searcher.ServiceID = '7971f918-a847-4430-9279-4a52d1efe18d'
-    $Searcher.SearchScope = 1  # Rechercher uniquement les mises à jour du système
-    $Searcher.ServerSelection = 3  # Activer les mises à jour de pilotes tiers
+    $Searcher.ServiceID = $ServiceId
+    $Searcher.SearchScope = 1
+    $Searcher.ServerSelection = 3
 
-    # Recherche des pilotes disponibles
     $Criteria = "IsInstalled=0 and Type='Driver'"
-    Write-Output "🔎 Recherche des mises à jour de pilotes..."
     $SearchResult = $Searcher.Search($Criteria)
     $Updates = $SearchResult.Updates
 
-    if ($Updates.Count -eq 0) {
+    if ($null -eq $Updates -or $Updates.Count -eq 0) {
         Write-Output "✅ Aucun pilote en attente de mise à jour."
-    } else {
-        Write-Output "⬇️ Téléchargement et installation des mises à jour détectées..."
+        return
+    }
 
-        # Télécharger les pilotes
-        $UpdatesToDownload = New-Object -ComObject Microsoft.Update.UpdateColl
-        $Updates | ForEach-Object { $UpdatesToDownload.Add($_) | Out-Null }
-        $Downloader = $Session.CreateUpdateDownloader()
-        $Downloader.Updates = $UpdatesToDownload
-        $Downloader.Download()
+    $UpdatesToDownload = New-Object -ComObject Microsoft.Update.UpdateColl
+    $Updates | ForEach-Object { $UpdatesToDownload.Add($_) | Out-Null }
+    $Downloader = $Session.CreateUpdateDownloader()
+    $Downloader.Updates = $UpdatesToDownload
+    $DownloadResult = $Downloader.Download()
 
-        # Installer les pilotes téléchargés
-        $UpdatesToInstall = New-Object -ComObject Microsoft.Update.UpdateColl
-        $Updates | ForEach-Object { if ($_.IsDownloaded) { $UpdatesToInstall.Add($_) | Out-Null } }
-        $Installer = $Session.CreateUpdateInstaller()
-        $Installer.Updates = $UpdatesToInstall
-        $InstallationResult = $Installer.Install()
-
-        if ($InstallationResult.RebootRequired) {
-            Write-Output "🔴 Un redémarrage est requis pour finaliser l'installation des pilotes."
-        } else {
-            Write-Output "✅ Installation des pilotes terminée avec succès."
+    if ($DownloadResult.ResultCode -ne 2) {
+        throw "Le téléchargement des mises à jour a échoué (ResultCode: $($DownloadResult.ResultCode))."
+    }
+} finally {
+    if ($null -ne $UpdateSvc) {
+        $UpdateSvc.Services | Where-Object { $_.IsDefaultAUService -eq $false -and $_.ServiceID -eq $ServiceId } | ForEach-Object {
+            $UpdateSvc.RemoveService($_.ServiceID)
         }
     }
-
-    # Nettoyage du service Microsoft Update
-    Write-Output "🧹 Nettoyage du service Microsoft Update..."
-    $UpdateSvc.Services | Where-Object { $_.IsDefaultAUService -eq $false -and $_.ServiceID -eq "7971f918-a847-4430-9279-4a52d1efe18d" } | ForEach-Object {
-        $UpdateSvc.RemoveService($_.ServiceID)
-    }
-
-} catch {
-    Write-Output "❌ Une erreur est survenue : $_"
+    Stop-Transcript
 }
-
-# Fin du script et arrêt du logging
-Write-Output "🎯 Fin du processus de mise à jour des pilotes."
-Stop-Transcript
 ```
 
+➡️ **Script complet** : `force_update_driversV2_pourGPO.ps1`
 ---
 
 ## 🚀 **Déploiement via GPO**
