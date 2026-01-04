@@ -1,56 +1,74 @@
 ﻿$OutputEncoding = [System.Text.Encoding]::UTF8
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
 
-# Ajouter le service Microsoft Update pour rechercher les pilotes tiers
-$UpdateSvc = New-Object -ComObject Microsoft.Update.ServiceManager
-$UpdateSvc.AddService2("7971f918-a847-4430-9279-4a52d1efe18d",7,"")
+try {
+    # Ajouter le service Microsoft Update pour rechercher les pilotes tiers
+    $UpdateSvc = New-Object -ComObject Microsoft.Update.ServiceManager
+    $ServiceId = "7971f918-a847-4430-9279-4a52d1efe18d"
+    $UpdateSvc.AddService2($ServiceId,7,"")
 
-# Créer une session Windows Update
-$Session = New-Object -ComObject Microsoft.Update.Session
-$Searcher = $Session.CreateUpdateSearcher() 
-$Searcher.ServiceID = '7971f918-a847-4430-9279-4a52d1efe18d'
-$Searcher.SearchScope = 1  # Rechercher uniquement les mises à jour système
-$Searcher.ServerSelection = 3  # Activer les mises à jour de pilotes tiers
+    # Créer une session Windows Update
+    $Session = New-Object -ComObject Microsoft.Update.Session
+    $Searcher = $Session.CreateUpdateSearcher() 
+    $Searcher.ServiceID = $ServiceId
+    $Searcher.SearchScope = 1  # Rechercher uniquement les mises à jour système
+    $Searcher.ServerSelection = 3  # Activer les mises à jour de pilotes tiers
 
-# Définir le critère de recherche pour les pilotes
-$Criteria = "IsInstalled=0 and Type='Driver'"
-Write-Host('🔍 Recherche des mises à jour de pilotes...') -ForegroundColor Cyan   
-$SearchResult = $Searcher.Search($Criteria)          
-$Updates = $SearchResult.Updates
+    # Définir le critère de recherche pour les pilotes
+    $Criteria = "IsInstalled=0 and Type='Driver'"
+    Write-Host('🔍 Recherche des mises à jour de pilotes...') -ForegroundColor Cyan   
+    $SearchResult = $Searcher.Search($Criteria)          
+    $Updates = $SearchResult.Updates
 
-# Vérification des mises à jour disponibles
-if([string]::IsNullOrEmpty($Updates)) {
-    Write-Host "✅ Aucun pilote en attente de mise à jour."
-} else {
-    # Afficher les pilotes disponibles
-    $Updates | Select Title, DriverModel, DriverVerDate, Driverclass, DriverManufacturer | Format-List
+    # Vérification des mises à jour disponibles
+    if ($null -eq $Updates -or $Updates.Count -eq 0) {
+        Write-Host "✅ Aucun pilote en attente de mise à jour."
+    } else {
+        # Afficher les pilotes disponibles
+        $Updates | Select Title, DriverModel, DriverVerDate, Driverclass, DriverManufacturer | Format-List
 
-    # Télécharger les mises à jour détectées
-    $UpdatesToDownload = New-Object -ComObject Microsoft.Update.UpdateColl
-    $updates | ForEach-Object { $UpdatesToDownload.Add($_) | Out-Null }
-    Write-Host('⬇️ Téléchargement des mises à jour de pilotes...') -ForegroundColor Yellow
-    $UpdateSession = New-Object -ComObject Microsoft.Update.Session
-    $Downloader = $UpdateSession.CreateUpdateDownloader()
-    $Downloader.Updates = $UpdatesToDownload
-    $Downloader.Download()
+        # Télécharger les mises à jour détectées
+        $UpdatesToDownload = New-Object -ComObject Microsoft.Update.UpdateColl
+        $updates | ForEach-Object { $UpdatesToDownload.Add($_) | Out-Null }
+        Write-Host('⬇️ Téléchargement des mises à jour de pilotes...') -ForegroundColor Yellow
+        $UpdateSession = New-Object -ComObject Microsoft.Update.Session
+        $Downloader = $UpdateSession.CreateUpdateDownloader()
+        $Downloader.Updates = $UpdatesToDownload
+        $DownloadResult = $Downloader.Download()
+        if ($DownloadResult.ResultCode -ne 2) {
+            throw "Le téléchargement des mises à jour a échoué (ResultCode: $($DownloadResult.ResultCode))."
+        }
 
-    # Installer les mises à jour téléchargées
-    $UpdatesToInstall = New-Object -ComObject Microsoft.Update.UpdateColl
-    $updates | ForEach-Object { if ($_.IsDownloaded) { $UpdatesToInstall.Add($_) | Out-Null } }
+        # Installer les mises à jour téléchargées
+        $UpdatesToInstall = New-Object -ComObject Microsoft.Update.UpdateColl
+        $updates | ForEach-Object { if ($_.IsDownloaded) { $UpdatesToInstall.Add($_) | Out-Null } }
 
-    Write-Host('⚙️ Installation des pilotes en cours...') -ForegroundColor Green
-    $Installer = $UpdateSession.CreateUpdateInstaller()
-    $Installer.Updates = $UpdatesToInstall
-    $InstallationResult = $Installer.Install()
+        if ($UpdatesToInstall.Count -eq 0) {
+            Write-Host "⚠️ Aucun pilote téléchargé n'est disponible pour l'installation." -ForegroundColor Yellow
+            return
+        }
 
-    # Vérifier si un redémarrage est requis
-    if ($InstallationResult.RebootRequired) { 
-        Write-Host('🔴 Redémarrage requis ! Veuillez redémarrer le système.') -ForegroundColor Red
-    } else { 
-        Write-Host('✅ Installation des pilotes terminée avec succès !') -ForegroundColor Green
+        Write-Host('⚙️ Installation des pilotes en cours...') -ForegroundColor Green
+        $Installer = $UpdateSession.CreateUpdateInstaller()
+        $Installer.Updates = $UpdatesToInstall
+        $InstallationResult = $Installer.Install()
+
+        # Vérifier si un redémarrage est requis
+        if ($InstallationResult.RebootRequired) {
+            Write-Host('🔴 Redémarrage requis ! Veuillez redémarrer le système.') -ForegroundColor Red
+        } else {
+            Write-Host('✅ Installation des pilotes terminée avec succès !') -ForegroundColor Green
+        }
     }
 
-    # Nettoyer le service Microsoft Update ajouté
-    $updateSvc.Services | Where-Object { $_.IsDefaultAUService -eq $false -and $_.ServiceID -eq "7971f918-a847-4430-9279-4a52d1efe18d" } | ForEach-Object { 
-        $UpdateSvc.RemoveService($_.ServiceID)
+} catch {
+    Write-Host "❌ Une erreur est survenue : $_" -ForegroundColor Red
+    throw
+} finally {
+    if ($null -ne $UpdateSvc) {
+        $updateSvc.Services | Where-Object { $_.IsDefaultAUService -eq $false -and $_.ServiceID -eq $ServiceId } | ForEach-Object {
+            $UpdateSvc.RemoveService($_.ServiceID)
+        }
     }
 }
