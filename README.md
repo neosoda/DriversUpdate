@@ -1,139 +1,208 @@
-# 🛠️ Script PowerShell - Mise à jour Automatique des Pilotes via Windows Update
+# DriversUpdate
 
-![Windows Update](https://img.shields.io/badge/Windows%20Update-Driver%20Upgrade-blue?style=for-the-badge&logo=windows&logoColor=white)
+Scripts PowerShell pour rechercher, telecharger et installer silencieusement les mises a jour de pilotes disponibles via l'API Windows Update.
 
-## 📖 Description
-Ces scripts PowerShell **automatisent la mise à jour des pilotes** en utilisant **Windows Update**. Ils sont conçus pour être **déployés via GPO ou Snapin FOG Project**, permettant une exécution **silencieuse et sans intervention utilisateur**.
+Le script recommande pour un deploiement entreprise est :
 
-**Scripts disponibles :**
-- `force_update_driversV2_pourGPO.ps1` : version orientée GPO avec transcript et nettoyage garanti.
-- `force_update_driversV2bis.ps1` : version interactive affichant la liste des pilotes détectés.
-
-## 🔥 Fonctionnalités
-✅ **Télécharge et installe automatiquement** les pilotes depuis Windows Update.  
-✅ **Compatible avec GPO et FOG Project** *(exécution en mode SYSTEM)*.  
-✅ **Génère un fichier log** (`C:\Windows\Temp\DriverUpdateLog.txt`) pour suivre les mises à jour.  
-✅ **Exécution en arrière-plan** *(aucune interaction requise)*.  
-✅ **Suppression du service Microsoft Update** après exécution pour garder un système propre.  
-✅ **Gestion d'erreurs stricte** (`Set-StrictMode`, `$ErrorActionPreference = 'Stop'`) pour éviter les échecs silencieux.  
-
----
-
-## 📜 **Extrait du script (GPO)**
-```powershell
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
-
-$LogFile = "C:\Windows\Temp\DriverUpdateLog.txt"
-Start-Transcript -Path $LogFile -Append -Force
-
-try {
-    $UpdateSvc = New-Object -ComObject Microsoft.Update.ServiceManager
-    $ServiceId = "7971f918-a847-4430-9279-4a52d1efe18d"
-    $UpdateSvc.AddService2($ServiceId, 7, "") | Out-Null
-
-    $Session = New-Object -ComObject Microsoft.Update.Session
-    $Searcher = $Session.CreateUpdateSearcher()
-    $Searcher.ServiceID = $ServiceId
-    $Searcher.SearchScope = 1
-    $Searcher.ServerSelection = 3
-
-    $Criteria = "IsInstalled=0 and Type='Driver'"
-    $SearchResult = $Searcher.Search($Criteria)
-    $Updates = $SearchResult.Updates
-
-    if ($null -eq $Updates -or $Updates.Count -eq 0) {
-        Write-Output "✅ Aucun pilote en attente de mise à jour."
-        return
-    }
-
-    $UpdatesToDownload = New-Object -ComObject Microsoft.Update.UpdateColl
-    $Updates | ForEach-Object { $UpdatesToDownload.Add($_) | Out-Null }
-    $Downloader = $Session.CreateUpdateDownloader()
-    $Downloader.Updates = $UpdatesToDownload
-    $DownloadResult = $Downloader.Download()
-
-    if ($DownloadResult.ResultCode -ne 2) {
-        throw "Le téléchargement des mises à jour a échoué (ResultCode: $($DownloadResult.ResultCode))."
-    }
-} finally {
-    if ($null -ne $UpdateSvc) {
-        $UpdateSvc.Services | Where-Object { $_.IsDefaultAUService -eq $false -and $_.ServiceID -eq $ServiceId } | ForEach-Object {
-            $UpdateSvc.RemoveService($_.ServiceID)
-        }
-    }
-    Stop-Transcript
-}
+```text
+force_update_drivers_gpo_hardened.ps1
 ```
 
-➡️ **Script complet** : `force_update_driversV2_pourGPO.ps1`
----
+Il est concu pour une execution non interactive en contexte machine, idealement via une tache planifiee creee par GPO et executee en `NT AUTHORITY\SYSTEM`.
 
-## 🚀 **Déploiement via GPO**
-### **1️⃣ Ajouter le script dans une GPO**
-1. **Copier le script** dans un partage réseau :  
-   ```
-   \\Serveur\Scripts\Maj_Pilotes_GPO.ps1
-   ```
-2. **Ouvrir `GPMC.msc`** et créer une **nouvelle GPO**.
-3. Naviguer vers :
-   ```
-   Configuration Ordinateur > Stratégies > Paramètres Windows > Scripts (Démarrage)
-   ```
-4. **Ajouter le script PowerShell** en tant que script de démarrage.
+## Objectif
 
-### **2️⃣ Appliquer la GPO**
-Sur un poste client, exécuter :
-```powershell
-gpupdate /force
+- Deploiement silencieux sur postes Windows 10 et Windows 11.
+- Execution compatible GPO, sans session utilisateur ouverte.
+- Pas de contournement UAC ni d'elevation interactive.
+- Journalisation locale dans `C:\ProgramData\DriversUpdate\logs\deploy.log`.
+- Etat local dans `C:\ProgramData\DriversUpdate\state\state.json`.
+- Execution relancable sans effet de bord.
+- Codes retour exploitables par GPO, supervision ou inventaire.
+
+## Scripts
+
+| Fichier | Usage |
+| --- | --- |
+| `force_update_drivers_gpo_hardened.ps1` | Version recommandee pour GPO, tache planifiee SYSTEM et deploiement silencieux. |
+| `force_update_driversV2_pourGPO.ps1` | Ancienne version GPO conservee pour reference. |
+| `force_update_driversV2bis.ps1` | Ancienne version interactive, non recommandee pour GPO. |
+
+## Mode de deploiement recommande
+
+Utiliser une tache planifiee deployee par GPO ordinateur.
+
+Ce mode est preferable a un script de demarrage pur, car il permet :
+
+- un demarrage differe apres l'ouverture reseau et la stabilisation des services Windows Update ;
+- une execution recurrente controlee ;
+- un historique d'execution dans le Planificateur de taches ;
+- une execution en `SYSTEM` sans mot de passe ;
+- une reduction de l'impact sur le temps de demarrage.
+
+## Configuration GPO conseillee
+
+### 1. Copier le script localement
+
+Chemin GPO :
+
+```text
+Configuration ordinateur
+ > Preferences
+ > Parametres Windows
+ > Fichiers
 ```
-Puis **redémarrer la machine**.
 
----
+Action : `Mettre a jour`
 
-## 🎯 **Déploiement via FOG Project (Snapin)**
-### **1️⃣ Ajouter le script en Snapin**
-1. **Sauvegarder le script sous `Maj_Pilotes_FOG.ps1`**.
-2. **Aller dans l'interface de FOG** et ajouter un **nouveau Snapin**.
-3. **Paramétrer le Snapin** :
-   - **Snapin Run With** : `powershell.exe`
-   - **Snapin Run With Argument** : `-ExecutionPolicy Bypass -NoProfile -File`
-   - **Snapin File** : `Maj_Pilotes_FOG.ps1`
-   - **Reboot after install** : ✅ *(si nécessaire)*
-   - **Snapin Enabled** : ✅
+Source exemple :
 
-4. **Déployer le Snapin** sur les machines via FOG.
+```text
+\\domaine.local\SYSVOL\domaine.local\scripts\DriversUpdate\force_update_drivers_gpo_hardened.ps1
+```
 
----
+Destination :
 
-## 🔍 **Vérifications après exécution**
-1️⃣ **Vérifier Windows Update**  
-   - Aller dans **Paramètres > Windows Update** et voir si des pilotes ont été installés.  
+```text
+C:\ProgramData\DriversUpdate\force_update_drivers_gpo_hardened.ps1
+```
 
-2️⃣ **Vérifier le fichier log**  
-   ```powershell
-   Get-Content C:\Windows\Temp\DriverUpdateLog.txt
-   ```
-   Cela affichera **toutes les actions du script et les erreurs éventuelles**.
+### 2. Creer la tache planifiee
 
-3️⃣ **Forcer une mise à jour manuelle** (si besoin) :
-   ```powershell
-   UsoClient.exe StartScan
-   UsoClient.exe StartDownload
-   UsoClient.exe StartInstall
-   ```
+Chemin GPO :
 
----
+```text
+Configuration ordinateur
+ > Preferences
+ > Parametres du Panneau de configuration
+ > Taches planifiees
+```
 
-## 📌 **Pourquoi utiliser ce script ?**
-✔️ **Automatisation totale des mises à jour des pilotes**  
-✔️ **Idéal pour les environnements entreprise (GPO, FOG Project)**  
-✔️ **Facilement auditable grâce aux logs**  
-✔️ **Sans intervention utilisateur (exécution silencieuse)**  
+Parametres recommandes :
 
-📢 **Tu as des idées d’améliorations ? Contribue au projet !** 😃  
+```text
+Nom : DriversUpdate - Windows Update Drivers
+Compte : NT AUTHORITY\SYSTEM
+Executer avec les autorisations maximales : Oui
+Executer que l'utilisateur soit connecte ou non : Oui
+Configure pour : Windows 10 ou ulterieur
+```
 
----
-🔗 **Auteur : [@Neosoda](https://github.com/neosoda)**  
+Declencheurs recommandes :
 
----
+```text
+Au demarrage
+Delai : 15 a 60 minutes
+```
+
+Optionnel :
+
+```text
+Declencheur hebdomadaire
+Delai aleatoire : 1 a 4 heures
+```
+
+Action :
+
+```text
+Programme :
+%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe
+
+Arguments :
+-NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\DriversUpdate\force_update_drivers_gpo_hardened.ps1"
+```
+
+## Parametres utiles
+
+```powershell
+-Force
+```
+
+Force une recherche meme si une execution reussie recente existe.
+
+```powershell
+-MinimumScanIntervalHours 24
+```
+
+Evite de rescanner trop souvent. Valeur par defaut : `24`.
+
+```powershell
+-AcceptEula $true
+```
+
+Accepte les EULA des mises a jour Windows Update. Valeur par defaut : `$true`.
+
+```powershell
+-TemporaryMicrosoftUpdateService
+```
+
+Supprime le service Microsoft Update uniquement si le script l'a ajoute pendant cette execution. Non recommande par defaut en environnement entreprise, car Microsoft Update peut etre une configuration voulue.
+
+## Codes retour
+
+| Code | Signification |
+| ---: | --- |
+| `0` | Succes, aucune mise a jour, ou execution ignoree car recente. |
+| `3010` | Succes avec redemarrage requis. |
+| `100` | Version PowerShell non supportee. |
+| `101` | Execution non privilegiee. |
+| `102` | Probleme d'architecture ou de relance PowerShell 64 bits. |
+| `103` | Prerequis non satisfait. |
+| `110` | Echec de recherche Windows Update. |
+| `120` | Echec de telechargement. |
+| `130` | Echec d'installation. |
+| `140` | Succes partiel. |
+| `199` | Erreur inattendue. |
+
+## Tests manuels
+
+Verifier la syntaxe :
+
+```powershell
+$errors = $null
+[System.Management.Automation.Language.Parser]::ParseFile(
+  "C:\ProgramData\DriversUpdate\force_update_drivers_gpo_hardened.ps1",
+  [ref]$null,
+  [ref]$errors
+) | Out-Null
+$errors
+```
+
+Execution manuelle depuis une console administrateur :
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\DriversUpdate\force_update_drivers_gpo_hardened.ps1" -Force -MinimumScanIntervalHours 0
+echo $LASTEXITCODE
+```
+
+Execution en contexte `SYSTEM` avec PsExec :
+
+```cmd
+psexec.exe -accepteula -s powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\DriversUpdate\force_update_drivers_gpo_hardened.ps1" -Force -MinimumScanIntervalHours 0
+```
+
+Consulter les journaux :
+
+```powershell
+Get-Content "C:\ProgramData\DriversUpdate\logs\deploy.log" -Tail 100
+Get-Content "C:\ProgramData\DriversUpdate\state\state.json" -Raw
+```
+
+## Procedure de validation avant deploiement massif
+
+1. Creer une OU pilote avec quelques postes Windows 10 et Windows 11.
+2. Lier la GPO a cette OU uniquement.
+3. Verifier que le script est bien copie dans `C:\ProgramData\DriversUpdate`.
+4. Verifier que la tache planifiee s'execute en `NT AUTHORITY\SYSTEM`.
+5. Controler `deploy.log`, `state.json`, le code retour et l'historique de la tache.
+6. Confirmer le comportement en cas de redemarrage requis avec le code `3010`.
+7. Verifier les politiques Windows Update/WSUS : si l'acces a Microsoft Update est bloque, le script journalise l'echec mais ne peut pas telecharger les pilotes.
+8. Etendre progressivement le ciblage GPO avec un delai aleatoire pour eviter les pics de charge.
+
+## Notes d'exploitation
+
+- Ne pas lancer le script dans un contexte utilisateur standard.
+- Ne pas ajouter de logique UAC interactive.
+- Ne pas stocker de mot de passe : utiliser le compte `SYSTEM`.
+- Eviter l'execution trop frequente ; conserver un intervalle minimal de scan.
+- Surveiller les codes retour `120`, `130` et `140` pour detecter les problemes Windows Update ou pilotes.
