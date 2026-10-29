@@ -1,0 +1,21 @@
+name: PowerShell CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate PowerShell 5.1 syntax and logic
+        shell: powershell
+        run: .\tests\validate.ps1
+      - name: PSScriptAnalyzer errors
+        shell: powershell
+        run: |
+          Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -Repository PSGallery
+          $issues = @(Invoke-ScriptAnalyzer -Path .\force_update_drivers_gpo_hardened.ps1 -Severity Error)
+          if ($issues.Count -gt 0) { $issues | Format-Table; exit 1 }
