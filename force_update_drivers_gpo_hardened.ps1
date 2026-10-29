@@ -269,17 +269,17 @@ function Get-DriverExclusionReason {
     param([Parameter(Mandatory = $true)]$Update)
     $title = [string]$Update.Title
     $driverClass = [string](Get-ComPropertyValue -Object $Update -Name 'DriverClass')
-    foreach ($class in $script:Configuration.ExcludedDriverClasses) {
+    foreach ($class in $script:Configuration['ExcludedDriverClasses']) {
         if ($driverClass -ieq $class) { return "ExcludedClass:$class" }
     }
-    foreach ($part in $script:Configuration.ExcludedTitleContains) {
+    foreach ($part in $script:Configuration['ExcludedTitleContains']) {
         if ($title.IndexOf($part, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
             return "ExcludedTitle:$part"
         }
     }
-    if ($script:Configuration.IncludedTitleContains.Count -gt 0) {
+    if ($script:Configuration['IncludedTitleContains'].Count -gt 0) {
         $allowed = $false
-        foreach ($part in $script:Configuration.IncludedTitleContains) {
+        foreach ($part in $script:Configuration['IncludedTitleContains']) {
             if ($title.IndexOf($part, [StringComparison]::OrdinalIgnoreCase) -ge 0) { $allowed = $true; break }
         }
         if (-not $allowed) { return 'NotAllowlisted' }
@@ -333,7 +333,7 @@ function Save-State {
     }
     if ($script:ScanAttempted) { $lastScan = $now }
     if ($script:ScanSucceeded) { $lastSuccessfulScan = $now }
-    if ($Outcome -in @('Success', 'NoUpdatesFound', 'SuccessRebootRequired')) { $lastDeployment = $now }
+    if (-not ($ScanOnly -or $DryRun) -and $Outcome -in @('Success', 'NoUpdatesFound', 'SuccessRebootRequired')) { $lastDeployment = $now }
     $state = [ordered]@{
         ScriptName = $ScriptName
         ScriptVersion = $ScriptVersion
