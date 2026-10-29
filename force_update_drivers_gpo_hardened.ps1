@@ -60,12 +60,12 @@ function Write-Log {
     )
 
     $line = '{0} [{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff zzz'), $Level, $Message
-    Write-Output $line
+    Write-Host $line
 
     try {
         Add-Content -LiteralPath $script:LogFile -Value $line -Encoding UTF8
     } catch {
-        Write-Output ('{0} [ERROR] Unable to write log file: {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff zzz'), $_.Exception.Message)
+        Write-Host ('{0} [ERROR] Unable to write log file: {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff zzz'), $_.Exception.Message)
     }
 }
 
