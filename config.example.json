@@ -1,0 +1,5 @@
+{
+  "ExcludedDriverClasses": ["Firmware", "Net", "SCSIAdapter", "HDC", "DiskDrive"],
+  "ExcludedTitleContains": ["BIOS", "Firmware"],
+  "IncludedTitleContains": []
+}
