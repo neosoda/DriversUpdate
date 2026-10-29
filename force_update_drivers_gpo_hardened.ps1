@@ -235,7 +235,7 @@ function Get-PropertyOrNull {
     if ($null -eq $Object) { return $null }
     $property = $Object.PSObject.Properties[$Name]
     if ($null -eq $property) { return $null }
-    return $property.Value
+    return ,$property.Value
 }
 
 function Get-DriverConfiguration {
