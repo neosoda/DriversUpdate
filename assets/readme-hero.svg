@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="380" viewBox="0 0 1280 380" role="img" aria-labelledby="title desc">
+  <title id="title">DriversUpdate — mises à jour de pilotes Windows maîtrisées</title>
+  <desc id="desc">Bannière bleu nuit et turquoise, avec un circuit illustrant les étapes Scan, Filter et Install.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0A1023"/>
+      <stop offset=".54" stop-color="#101A33"/>
+      <stop offset="1" stop-color="#132C43"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2=".5">
+      <stop stop-color="#3BE4CF"/>
+      <stop offset="1" stop-color="#56B6FD"/>
+    </linearGradient>
+    <radialGradient id="halo">
+      <stop stop-color="#26D6CB" stop-opacity=".32"/>
+      <stop offset="1" stop-color="#26D6CB" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="34" height="34" patternUnits="userSpaceOnUse">
+      <path d="M34 0H0V34" fill="none" stroke="#82CEFC" stroke-opacity=".06" stroke-width="1"/>
+    </pattern>
+    <filter id="blur"><feGaussianBlur stdDeviation="30"/></filter>
+    <filter id="shadow" x="-30%" y="-50%" width="160%" height="200%">
+      <feDropShadow dx="0" dy="9" stdDeviation="12" flood-color="#000000" flood-opacity=".26"/>
+    </filter>
+  </defs>
+  <rect x="0" y="0" width="1280" height="380" rx="24" fill="url(#background)"/>
+  <rect x="0" y="0" width="1280" height="380" rx="24" fill="url(#grid)"/>
+  <circle cx="1080" cy="180" r="285" fill="url(#halo)"/>
+  <circle cx="735" cy="-80" r="210" fill="#567BFF" opacity=".08" filter="url(#blur)"/>
+  <path d="M0 312L252 60" stroke="#64DCD9" stroke-opacity=".07" stroke-width="2"/>
+  <path d="M900 380L1280 0" stroke="#64DCD9" stroke-opacity=".09" stroke-width="2"/>
+  <rect x="65" y="56" width="211" height="33" rx="16.5" stroke="#60DCCA" stroke-opacity=".36" fill="#46E4CE" fill-opacity=".08"/>
+  <circle cx="85" cy="72.5" r="4.5" fill="#4BEBCB"/>
+  <text x="101" y="78" fill="#A1F6E8" font-size="15" font-weight="700" letter-spacing="1.9" font-family="Segoe UI,Arial,sans-serif">WINDOWS AUTOMATION</text>
+  <text x="63" y="180" fill="#FFFFFF" font-size="74" font-weight="800" letter-spacing="-2.2" font-family="Segoe UI,Arial,sans-serif">Drivers<tspan fill="url(#accent)">Update</tspan></text>
+  <text x="66" y="225" fill="#D0DBEE" font-size="23" font-weight="400" font-family="Segoe UI,Arial,sans-serif">Des pilotes à jour. Un déploiement sous contrôle.</text>
+  <path d="M66 251H654" stroke="#98BCD5" stroke-opacity=".19"/>
+  <text x="66" y="286" fill="#90DDEA" font-size="17" font-weight="600" font-family="Segoe UI,Arial,sans-serif">PowerShell 5.1+</text>
+  <circle cx="230" cy="281" r="3" fill="#517C92"/>
+  <text x="247" y="286" fill="#90DDEA" font-size="17" font-weight="600" font-family="Segoe UI,Arial,sans-serif">GPO / SYSTEM</text>
+  <circle cx="405" cy="281" r="3" fill="#517C92"/>
+  <text x="422" y="286" fill="#90DDEA" font-size="17" font-weight="600" font-family="Segoe UI,Arial,sans-serif">Windows Update Agent</text>
+  <text x="66" y="335" fill="#7D94B5" font-size="14" letter-spacing="2" font-family="Segoe UI,Arial,sans-serif">AUDIT FIRST  /  SAFE BY DEFAULT</text>
+  <g filter="url(#shadow)">
+    <rect x="801" y="48" width="409" height="282" rx="24" fill="#0E2134" stroke="#39657C" stroke-width="1.5"/>
+    <rect x="824" y="71" width="363" height="236" rx="16" fill="#0A1729" stroke="#1C3851"/>
+    <rect x="849" y="97" width="313" height="52" rx="13" fill="#133044" stroke="#346479"/>
+    <circle cx="881" cy="123" r="13" fill="#2CE4D0" fill-opacity=".12" stroke="#4FE9D8"/>
+    <path d="M875 123h12m-6-6v12" stroke="#4FE9D8" stroke-width="2" stroke-linecap="round"/>
+    <text x="906" y="130" fill="#F0F8FF" font-size="20" font-weight="700" font-family="Segoe UI,Arial,sans-serif">SCAN</text>
+    <text x="1124" y="129" fill="#67B2D2" font-size="13" text-anchor="end" font-family="Segoe UI,Arial,sans-serif">WUA</text>
+    <path d="M1004 149v24" stroke="#57DBC9" stroke-width="2" stroke-dasharray="4 4"/>
+    <path d="M998 167l6 8 6-8" fill="none" stroke="#57DBC9" stroke-width="2"/>
+    <rect x="849" y="178" width="313" height="52" rx="13" fill="#133044" stroke="#346479"/>
+    <circle cx="881" cy="204" r="13" fill="#2CE4D0" fill-opacity=".12" stroke="#4FE9D8"/>
+    <path d="M876 204l4 4 7-8" fill="none" stroke="#4FE9D8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="906" y="211" fill="#F0F8FF" font-size="20" font-weight="700" font-family="Segoe UI,Arial,sans-serif">FILTER</text>
+    <text x="1124" y="210" fill="#67B2D2" font-size="13" text-anchor="end" font-family="Segoe UI,Arial,sans-serif">POLICY</text>
+    <path d="M1004 230v24" stroke="#57DBC9" stroke-width="2" stroke-dasharray="4 4"/>
+    <path d="M998 248l6 8 6-8" fill="none" stroke="#57DBC9" stroke-width="2"/>
+    <rect x="849" y="259" width="313" height="26" rx="8" fill="url(#accent)"/>
+    <text x="1005" y="278" text-anchor="middle" fill="#082536" font-size="15" font-weight="800" letter-spacing="2.2" font-family="Segoe UI,Arial,sans-serif">INSTALL</text>
+  </g>
+  <rect x=".5" y=".5" width="1279" height="379" rx="23.5" fill="none" stroke="#8EBDCF" stroke-opacity=".15"/>
+</svg>
