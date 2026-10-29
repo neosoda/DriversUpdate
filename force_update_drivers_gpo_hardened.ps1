@@ -334,6 +334,9 @@ function Save-State {
     if ($script:ScanAttempted) { $lastScan = $now }
     if ($script:ScanSucceeded) { $lastSuccessfulScan = $now }
     if (-not ($ScanOnly -or $DryRun) -and $Outcome -in @('Success', 'NoUpdatesFound', 'SuccessRebootRequired')) { $lastDeployment = $now }
+    $scanMode = 'Install'
+    if ($ScanOnly) { $scanMode = 'ScanOnly' }
+    elseif ($DryRun) { $scanMode = 'DryRun' }
     $state = [ordered]@{
         ScriptName = $ScriptName
         ScriptVersion = $ScriptVersion
@@ -345,7 +348,7 @@ function Save-State {
         LastSuccessfulDeploymentUtc = $lastDeployment
         LastExitCode = $ExitCode
         LastOutcome = $Outcome
-        ScanMode = if ($ScanOnly) { 'ScanOnly' } elseif ($DryRun) { 'DryRun' } else { 'Install' }
+        ScanMode = $scanMode
         UpdateSource = $script:UpdateSource
         UpdatesFound = $UpdatesFound
         UpdatesInstalled = $UpdatesInstalled
