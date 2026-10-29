@@ -20,10 +20,26 @@ $ast.FindAll({
     param($node)
     $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
 }, $true) | ForEach-Object { $functions[$_.Name] = $_.Extent.Text }
-foreach ($required in @('Get-DriverExclusionReason', 'Test-RecentSuccessfulRun', 'Get-PropertyOrNull')) {
+foreach ($required in @('Get-DriverExclusionReason', 'Test-RecentSuccessfulRun', 'Get-PropertyOrNull', 'Get-DriverConfiguration', 'Write-Log')) {
     if (-not $functions.ContainsKey($required)) { throw "Missing function $required" }
     . ([scriptblock]::Create($functions[$required]))
 }
+
+
+$script:LogFile = Join-Path $env:TEMP 'driversupdate-ci-test.log'
+$testLogOutput = @(Write-Log -Message 'Pipeline purity check')
+if ($testLogOutput.Count -ne 0) { throw 'Write-Log must not emit data on the success pipeline' }
+$script:ConfigPath = Join-Path $root 'config.example.json'
+$loadedConfig = Get-DriverConfiguration
+if ($loadedConfig['ExcludedDriverClasses'].Count -ne 5) { throw 'Default configuration did not load correctly' }
+$script:ConfigPath = Join-Path $env:TEMP 'driversupdate-ci-config.json'
+'{"ExcludedDriverClasses":[],"ExcludedTitleContains":["BIOS"],"IncludedTitleContains":["Audio"]}' |
+    Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
+$loadedConfig = Get-DriverConfiguration
+if ($loadedConfig['ExcludedDriverClasses'].Count -ne 0) { throw 'Empty config array must override defaults' }
+if ($loadedConfig['IncludedTitleContains'].Count -ne 1) { throw 'Single-item config array must be preserved' }
+Remove-Item -LiteralPath $script:ConfigPath -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $script:LogFile -ErrorAction SilentlyContinue
 
 function Get-ComPropertyValue { param($Object, [string]$Name) return $Object.$Name }
 function Get-PreviousState { return $script:FakeState }
