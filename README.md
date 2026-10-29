@@ -13,7 +13,7 @@
 **L'automatisation des pilotes Windows pensée pour les parcs administrés.**  
 Sans module externe · Sans interface utilisateur · Sans redémarrage forcé
 
-[**Démarrer**](#demarrage-rapide) · [**Déployer via GPO**](#deploiement-par-gpo) · [**Configurer**](#configuration-des-filtres) · [**Superviser**](#journaux-et-supervision)
+[**Démarrer**](#démarrage-rapide) · [**Déployer via GPO**](#déploiement-par-gpo) · [**Configurer**](#configuration-des-filtres) · [**Superviser**](#journaux-et-supervision)
 
 </div>
 
