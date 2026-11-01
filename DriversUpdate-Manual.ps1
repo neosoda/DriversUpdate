@@ -36,18 +36,12 @@ function Invoke-ManualDriverUpdate {
         Write-Warning 'Open PowerShell as administrator to scan or install drivers.'
         return
     }
-    if ($Mode -eq 'Install') {
-        Write-Warning 'Drivers can affect hardware stability. Test on a pilot computer first.'
-        if ((Read-Host 'Type INSTALLER to confirm installation') -cne 'INSTALLER') {
-            Write-Host 'Installation cancelled.'
-            return
-        }
-    }
-
+    # The engine controls driver selection and explicit INSTALLER confirmation.
     $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $engineScript)
     switch ($Mode) {
         'Scan' { $arguments += '-ScanOnly' }
         'DryRun' { $arguments += '-DryRun' }
+        'Install' { $arguments += '-Interactive' }
     }
 
     try {
@@ -108,7 +102,7 @@ while ($true) {
     Write-Host '=== DriversUpdate - Manual ===' -ForegroundColor Cyan
     Write-Host '  1. Scan available drivers (no installation)'
     Write-Host '  2. Simulate selection (no installation)'
-    Write-Host '  3. Install eligible drivers (confirmation required)'
+    Write-Host '  3. Select and install drivers (explicit confirmation)'
     Write-Host '  4. View last result'
     Write-Host '  5. View last 50 log lines'
     Write-Host '  0. Quit'

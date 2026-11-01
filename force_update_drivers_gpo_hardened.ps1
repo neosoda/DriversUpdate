@@ -8,7 +8,8 @@ param(
     [switch]$DryRun,
     [string]$ConfigPath = "$env:ProgramData\DriversUpdate\config.json",
     [bool]$AcceptEula = $true,
-    [switch]$TemporaryMicrosoftUpdateService
+    [switch]$TemporaryMicrosoftUpdateService,
+    [switch]$Interactive
 )
 
 Set-StrictMode -Version Latest
@@ -116,14 +117,18 @@ function Invoke-NativePowerShellIfRequired {
     if ($Force) { $command += ' -Force' }
     if ($ScanOnly) { $command += ' -ScanOnly' }
     if ($DryRun) { $command += ' -DryRun' }
+    if ($Interactive) { $command += ' -Interactive' }
     if ($TemporaryMicrosoftUpdateService) { $command += ' -TemporaryMicrosoftUpdateService' }
     $command += '; exit $LASTEXITCODE'
 
     $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
     Write-Log -Message 'Relaunching through 64-bit Windows PowerShell.'
-    $process = Start-Process -FilePath $nativePowerShell -ArgumentList @(
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCommand
-    ) -Wait -PassThru -WindowStyle Hidden
+    $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCommand)
+    if ($Interactive) {
+        $process = Start-Process -FilePath $nativePowerShell -ArgumentList $arguments -Wait -PassThru -NoNewWindow
+    } else {
+        $process = Start-Process -FilePath $nativePowerShell -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
+    }
     return $process.ExitCode
 }
 
@@ -283,6 +288,95 @@ function Get-DriverExclusionReason {
     return $null
 }
 
+# One eligibility policy for the preview and for installation.
+function Get-DriverEligibilityReason {
+    param([Parameter(Mandatory = $true)]$Update)
+    try {
+        if ([bool]$Update.InstallationBehavior.CanRequestUserInput) { return 'RequiresInteraction' }
+    } catch {
+        return 'InteractionUnknown' # An unreadable COM flag must fail closed.
+    }
+    $exclusion = Get-DriverExclusionReason -Update $Update
+    if ($null -ne $exclusion) { return $exclusion }
+    if (-not $AcceptEula) {
+        try { if (-not [bool]$Update.EulaAccepted) { return 'EulaNotAccepted' } }
+        catch { return 'EulaUnknown' }
+    }
+    return $null
+}
+
+function ConvertTo-DriverSelection {
+    param(
+        [AllowEmptyString()][string]$InputText,
+        [int[]]$EligibleNumbers,
+        [int]$MaxIndex
+    )
+    $value = $InputText.Trim()
+    if ($value -eq '' -or $value -eq '0') { return }
+    if ($value -match '^(?i:t|tous|all)$') {
+        foreach ($number in $EligibleNumbers) { Write-Output $number }
+        return
+    }
+    $selected = @{}
+    foreach ($token in ($value -split ',')) {
+        # Positive -match populates $Matches; -notmatch does not update it.
+        if ($token -match '^\s*(\d+)(?:\s*-\s*(\d+))?\s*$') {
+            $first = [int]$Matches[1]
+            $last = if ($Matches.ContainsKey(2)) { [int]$Matches[2] } else { $first }
+        } else {
+            throw "Saisie incorrecte : $token"
+        }
+        if ($first -lt 1 -or $last -lt $first -or $last -gt $MaxIndex) {
+            throw "Plage hors limites : $token"
+        }
+        for ($number = $first; $number -le $last; $number++) {
+            if ($number -notin $EligibleNumbers) { throw "Pilote $number exclu ou non eligible." }
+            $selected[$number] = $true
+        }
+    }
+    foreach ($number in ($selected.Keys | Sort-Object)) { Write-Output ([int]$number) }
+}
+
+function Read-InteractiveDriverChoice {
+    param([Parameter(Mandatory = $true)]$Updates)
+    $eligible = New-Object 'System.Collections.Generic.List[int]'
+    Write-Host ''
+    Write-Host 'PILOTES DETECTES - selection manuelle' -ForegroundColor Cyan
+    Write-Host 'Les pilotes exclus ne sont pas selectionnables.' -ForegroundColor DarkGray
+    for ($index = 0; $index -lt $Updates.Count; $index++) {
+        $update = $Updates.Item($index)
+        $number = $index + 1
+        $reason = Get-DriverEligibilityReason -Update $update
+        if ($reason) {
+            Write-Host ("[{0,2}] EXCLU ({1}) - {2}" -f $number, $reason, $update.Title) -ForegroundColor DarkYellow
+        } else {
+            $eligible.Add($number)
+            Write-Host ("[{0,2}] OK - {1}" -f $number, $update.Title) -ForegroundColor Green
+        }
+        Write-Host ("     {0} / {1}" -f (Get-ComPropertyValue -Object $update -Name 'DriverManufacturer'), (Get-ComPropertyValue -Object $update -Name 'DriverClass')) -ForegroundColor DarkGray
+    }
+    if ($eligible.Count -eq 0) {
+        Write-Host 'Aucun pilote eligible.' -ForegroundColor Yellow
+        return [pscustomobject]@{ Cancelled = $true; SelectedIndices = @() }
+    }
+    Write-Host ''
+    Write-Host 'Numeros : 1,3-5 | T : tous les eligibles | 0 : annuler'
+    while ($true) {
+        $answer = Read-Host 'Votre selection'
+        try { $selected = @(ConvertTo-DriverSelection -InputText $answer -EligibleNumbers $eligible.ToArray() -MaxIndex $Updates.Count) }
+        catch { Write-Host $_.Exception.Message -ForegroundColor Yellow; continue }
+        if ($selected.Count -eq 0) { return [pscustomobject]@{ Cancelled = $true; SelectedIndices = @() } }
+        Write-Host ''
+        Write-Host 'Installation prevue :' -ForegroundColor Yellow
+        foreach ($number in $selected) { Write-Host ("  - {0}" -f $Updates.Item($number - 1).Title) }
+        Write-Host 'Les pilotes seront telecharges et installes; redemarrage potentiellement necessaire.' -ForegroundColor Yellow
+        if ((Read-Host 'Tapez INSTALLER pour confirmer') -cne 'INSTALLER') {
+            return [pscustomobject]@{ Cancelled = $true; SelectedIndices = @() }
+        }
+        return [pscustomobject]@{ Cancelled = $false; SelectedIndices = @($selected) }
+    }
+}
+
 function Add-DriverResult {
     param($Update, [string]$Status, [string]$Detail = '')
     [void]$script:DriverResults.Add([ordered]@{
@@ -333,6 +427,7 @@ function Save-State {
     $scanMode = 'Install'
     if ($ScanOnly) { $scanMode = 'ScanOnly' }
     elseif ($DryRun) { $scanMode = 'DryRun' }
+    elseif ($Interactive) { $scanMode = 'Interactive' }
     $state = [ordered]@{
         ScriptName = $ScriptName
         ScriptVersion = $ScriptVersion
@@ -356,24 +451,29 @@ function Save-State {
 
     # Write to a same-directory temp file, then atomically publish the JSON.
     # A crash must not leave a truncated state file behind.
-    $tempFile = Join-Path -Path $StateRoot -ChildPath ("state.{0}.tmp" -f [guid]::NewGuid().ToString('N'))
+    $uniqueId = [guid]::NewGuid().ToString('N')
+    $tempFile = Join-Path -Path $StateRoot -ChildPath ("state.{0}.tmp" -f $uniqueId)
+    $backupFile = Join-Path -Path $StateRoot -ChildPath ("state.{0}.bak" -f $uniqueId)
     try {
         $json = $state | ConvertTo-Json -Depth 4
         [System.IO.File]::WriteAllText($tempFile, $json, ([System.Text.UTF8Encoding]::new($false)))
         if (Test-Path -LiteralPath $script:StateFile -PathType Leaf) {
-            [System.IO.File]::Replace($tempFile, $script:StateFile, $null)
+            # .NET Framework 4.x on Windows PowerShell 5.1 requires a valid backup path.
+            [System.IO.File]::Replace($tempFile, $script:StateFile, $backupFile)
         } else {
             [System.IO.File]::Move($tempFile, $script:StateFile)
         }
     } finally {
-        if (Test-Path -LiteralPath $tempFile -PathType Leaf) {
-            Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
+        foreach ($file in @($tempFile, $backupFile)) {
+            if (Test-Path -LiteralPath $file -PathType Leaf) {
+                Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+            }
         }
     }
 }
 
 function Test-RecentSuccessfulRun {
-    if ($Force -or $ScanOnly -or $DryRun -or $MinimumScanIntervalHours -le 0) { return $false }
+    if ($Force -or $ScanOnly -or $DryRun -or $Interactive -or $MinimumScanIntervalHours -le 0) { return $false }
     $state = Get-PreviousState
     $previousDeployment = Get-PropertyOrNull -Object $state -Name 'LastSuccessfulDeploymentUtc'
     if (-not $previousDeployment -and $null -ne $state) {
@@ -423,6 +523,13 @@ function Invoke-DriverUpdateDeployment {
         if ([Environment]::OSVersion.Version.Major -lt 10) {
             Write-Log -Level 'ERROR' -Message "Unsupported Windows version: $([Environment]::OSVersion.VersionString)."
             Save-State -ExitCode $ExitCodes.PrerequisiteFailed -Outcome 'UnsupportedWindows'
+            return $ExitCodes.PrerequisiteFailed
+        }
+
+        if ($Interactive -and ($ScanOnly -or $DryRun -or (Test-IsLocalSystem) -or
+            -not [Environment]::UserInteractive -or [Console]::IsInputRedirected)) {
+            Write-Log -Level 'ERROR' -Message 'Interactive mode requires local console, not SYSTEM, and cannot be combined with scan-only switches.'
+            Save-State -ExitCode $ExitCodes.PrerequisiteFailed -Outcome 'InteractiveConsoleRequired'
             return $ExitCodes.PrerequisiteFailed
         }
 
@@ -500,30 +607,30 @@ function Invoke-DriverUpdateDeployment {
             return $ExitCodes.Success
         }
 
+        $interactiveSelectedIndices = $null
+        if ($Interactive) {
+            $choice = Read-InteractiveDriverChoice -Updates $updates
+            if ($choice.Cancelled) {
+                Write-Log -Message 'Interactive installation cancelled before any download.'
+                Save-State -ExitCode $ExitCodes.Success -Outcome 'CancelledByUser' -UpdatesFound $updatesFound
+                return $ExitCodes.Success
+            }
+            $interactiveSelectedIndices = @($choice.SelectedIndices)
+        }
+
         $installCandidates = New-Object -ComObject Microsoft.Update.UpdateColl
         for ($index = 0; $index -lt $updates.Count; $index++) {
             $update = $updates.Item($index)
             Write-Log -Message "Candidate update: $(Get-UpdateSummary -Update $update)"
 
-            $canRequestUserInput = $false
-            try {
-                $canRequestUserInput = [bool]$update.InstallationBehavior.CanRequestUserInput
-            } catch {
-                # Fail closed: an unreadable interaction flag must not be installed silently.
-                Write-Log -Level 'WARN' -Message "Skipping update; interaction requirement is unknown: $($update.Title)"
-                Add-DriverResult -Update $update -Status 'Skipped' -Detail 'InteractionUnknown'
-                continue
-            }
-
-            if ($canRequestUserInput) {
-                Write-Log -Level 'WARN' -Message "Skipping update because it can request user input: $($update.Title)"
-                Add-DriverResult -Update $update -Status 'Skipped' -Detail 'RequiresInteraction'
-                continue
-            }
-            $exclusion = Get-DriverExclusionReason -Update $update
+            $exclusion = Get-DriverEligibilityReason -Update $update
             if ($null -ne $exclusion) {
-                Write-Log -Message "Skipping filtered driver: $($update.Title) ($exclusion)"
+                Write-Log -Message "Skipping driver: $($update.Title) ($exclusion)"
                 Add-DriverResult -Update $update -Status 'Skipped' -Detail $exclusion
+                continue
+            }
+            if ($null -ne $interactiveSelectedIndices -and (($index + 1) -notin $interactiveSelectedIndices)) {
+                Add-DriverResult -Update $update -Status 'Skipped' -Detail 'NotSelected'
                 continue
             }
 

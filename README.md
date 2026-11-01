@@ -78,7 +78,7 @@ Ouvrez **Windows PowerShell en administrateur**, puis lancez :
 powershell.exe -NoProfile -File .\DriversUpdate-Manual.ps1
 ~~~
 
-Le menu permet de rechercher, simuler, installer après **confirmation explicite**, afficher le dernier état et consulter les logs. Il appelle toujours le moteur GPO dans un processus Windows PowerShell 5.1 distinct : mêmes filtres, mêmes règles WSUS/GPO, mêmes résultats et mêmes codes retour. **Conservez les deux fichiers côte à côte.** Le menu n'est pas destiné à une tâche planifiée.
+Le menu permet de rechercher, simuler, **sélectionner précisément les pilotes éligibles**, installer après **confirmation explicite**, afficher le dernier état et consulter les logs. Il appelle toujours le moteur GPO dans un processus Windows PowerShell 5.1 distinct : mêmes filtres, mêmes règles WSUS/GPO, mêmes résultats et mêmes codes retour. **Conservez les deux fichiers côte à côte.** Le menu n'est pas destiné à une tâche planifiée. Dans l'option 3, sélectionnez des numéros (`1,3-5`), `T` pour tous ou `0` pour annuler, puis saisissez exactement **INSTALLER**. Les pilotes exclus ne sont jamais sélectionnables ; l'intervalle GPO de 24 h ne bloque pas cette opération manuelle.
 
 > [!NOTE]
 > Les modes Scan et Simulation utilisent aujourd'hui **la même logique de sélection**. Ils peuvent démarrer les services Windows Update nécessaires et écrivent des journaux/états locaux, mais **n'acceptent pas les EULA, ne téléchargent pas et n'installent pas** de pilotes. L'option <code>-Force</code> ignore uniquement l'intervalle de scan : elle ne neutralise ni les GPO ni les filtres de sécurité.
@@ -270,7 +270,7 @@ powershell.exe -NoProfile -File .\tests\validate.ps1
 | Script | Usage |
 | :--- | :--- |
 | [force_update_drivers_gpo_hardened.ps1](force_update_drivers_gpo_hardened.ps1) | **GPO / SYSTEM**, sans interaction. Nom conservé pour les déploiements existants. |
-| [DriversUpdate-Manual.ps1](DriversUpdate-Manual.ps1) | **Manuel**, menu interactif et confirmation avant installation ; utilise le script GPO. |
+| [DriversUpdate-Manual.ps1](DriversUpdate-Manual.ps1) | **Manuel**, menu interactif, choix individuel et confirmation avant installation ; utilise le script GPO. |
 
 Les deux anciens scripts V2 ont été retirés pour éviter des déploiements divergents. Ils restent accessibles dans l'historique Git, pas dans la branche courante. Ne copiez pas le script manuel dans une GPO.
 ---

@@ -66,6 +66,7 @@ Assert-Equal (Get-DriverExclusionReason -Update $safe) 'NotAllowlisted' 'Allowli
 $script:Configuration.IncludedTitleContains = @('Audio')
 Assert-Equal (Get-DriverExclusionReason -Update $safe) $null 'Allowlist match'
 
+$script:Interactive = $false
 $script:MinimumScanIntervalHours = 24
 $script:Force = $false
 $script:ScanOnly = $false
@@ -106,7 +107,7 @@ $manualFunctions = @($manualAst.FindAll({
 foreach ($name in @('Invoke-ManualDriverUpdate', 'Show-LastState', 'Show-RecentLog')) {
     if ($manualFunctions -cnotcontains $name) { throw "Manual menu function missing: $name" }
 }
-if (-not $manualAst.Extent.Text.Contains("Type INSTALLER")) { throw 'Manual install confirmation is missing' }
+if (-not $manualAst.Extent.Text.Contains("'-Interactive'")) { throw 'Manual must request interactive selection' }
 if (-not $manualAst.Extent.Text.Contains("force_update_drivers_gpo_hardened.ps1")) { throw 'Manual must call GPO engine' }
 
 # Configuration must reject invalid JSON or unsupported values.
@@ -134,6 +135,7 @@ if (-not $functions.ContainsKey('Save-State')) {
 $stateTestRoot = Join-Path $env:TEMP ("driversupdate-ci-state-" + [guid]::NewGuid().ToString('N'))
 New-Item -Path $stateTestRoot -ItemType Directory -Force | Out-Null
 try {
+    $StateRoot = $stateTestRoot
     $script:StateFile = Join-Path $stateTestRoot 'state.json'
     $script:DriverResults = New-Object System.Collections.ArrayList
     $script:ScanAttempted = $true
@@ -151,9 +153,11 @@ try {
     Save-State -ExitCode 103 -Outcome 'InvalidConfig'
     $saved = Get-Content -LiteralPath $script:StateFile -Raw | ConvertFrom-Json -ErrorAction Stop
     Assert-Equal $saved.LastExitCode 103 'Atomic replacement'
-    $tempFiles = @(Get-ChildItem -LiteralPath $stateTestRoot -Filter '*.tmp' -File)
-    Assert-Equal $tempFiles.Count 0 'No temporary state files left behind'
+    $tempFiles = @(Get-ChildItem -LiteralPath $stateTestRoot -File | Where-Object { $_.Extension -in @('.tmp', '.bak') })
+    Assert-Equal $tempFiles.Count 0 'No temporary or backup state files left behind'
 } finally {
     Remove-Item -LiteralPath $stateTestRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 Write-Output 'PASS: atomic state create and replace'
+
+& (Join-Path $PSScriptRoot 'validate-interactive.ps1')
