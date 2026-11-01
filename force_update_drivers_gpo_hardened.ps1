@@ -107,9 +107,11 @@ function Invoke-NativePowerShellIfRequired {
     # Pass an encoded command to avoid Start-Process joining and misquoting
     # arbitrary paths. Keep the boolean as an actual PowerShell literal.
     $quote = { param([string]$Text) "'" + $Text.Replace("'", "''") + "'" }
-    $command = '& {0} -LogRoot {1} -StateRoot {2} -MinimumScanIntervalHours {3} -AcceptEula:${4} -ConfigPath {5}' -f \
-        (& $quote $PSCommandPath), (& $quote $LogRoot), (& $quote $StateRoot), \
-        $MinimumScanIntervalHours, ([string]$AcceptEula).ToLowerInvariant(), (& $quote $ConfigPath)
+    $pathLiteral = & $quote $PSCommandPath
+    $logRootLiteral = & $quote $LogRoot
+    $stateRootLiteral = & $quote $StateRoot
+    $configPathLiteral = & $quote $ConfigPath
+    $command = '& {0} -LogRoot {1} -StateRoot {2} -MinimumScanIntervalHours {3} -AcceptEula:${4} -ConfigPath {5}' -f $pathLiteral, $logRootLiteral, $stateRootLiteral, $MinimumScanIntervalHours, ([string]$AcceptEula).ToLowerInvariant(), $configPathLiteral
 
     if ($Force) { $command += ' -Force' }
     if ($ScanOnly) { $command += ' -ScanOnly' }
@@ -357,7 +359,7 @@ function Save-State {
     $tempFile = Join-Path -Path $StateRoot -ChildPath ("state.{0}.tmp" -f [guid]::NewGuid().ToString('N'))
     try {
         $json = $state | ConvertTo-Json -Depth 4
-        [System.IO.File]::WriteAllText($tempFile, $json, (New-Object System.Text.UTF8Encoding($false)))
+        [System.IO.File]::WriteAllText($tempFile, $json, ([System.Text.UTF8Encoding]::new($false)))
         if (Test-Path -LiteralPath $script:StateFile -PathType Leaf) {
             [System.IO.File]::Replace($tempFile, $script:StateFile, $null)
         } else {
