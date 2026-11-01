@@ -17,7 +17,6 @@ $ProgressPreference = 'SilentlyContinue'
 
 $ScriptName = 'DriversUpdateGpo'
 $ScriptVersion = '2.0.0'
-$MicrosoftUpdateServiceId = '7971f918-a847-4430-9279-4a52d1efe18d'
 
 $ExitCodes = @{
     Success = 0
@@ -105,29 +104,24 @@ function Invoke-NativePowerShellIfRequired {
         return $ExitCodes.Architecture
     }
 
-    $arguments = @(
-        '-NoProfile',
-        '-ExecutionPolicy', 'Bypass',
-        '-File', ('"{0}"' -f $PSCommandPath),
-        '-LogRoot', ('"{0}"' -f $LogRoot),
-        '-StateRoot', ('"{0}"' -f $StateRoot),
-        '-MinimumScanIntervalHours', $MinimumScanIntervalHours,
-        ('-AcceptEula:{0}' -f $AcceptEula),
-        '-ConfigPath', ('"{0}"' -f $ConfigPath)
-    )
+    # Pass an encoded command to avoid Start-Process joining and misquoting
+    # arbitrary paths. Keep the boolean as an actual PowerShell literal.
+    $quote = { param([string]$Text) "'" + $Text.Replace("'", "''") + "'" }
+    $command = '& {0} -LogRoot {1} -StateRoot {2} -MinimumScanIntervalHours {3} -AcceptEula:${4} -ConfigPath {5}' -f \
+        (& $quote $PSCommandPath), (& $quote $LogRoot), (& $quote $StateRoot), \
+        $MinimumScanIntervalHours, ([string]$AcceptEula).ToLowerInvariant(), (& $quote $ConfigPath)
 
-    if ($Force) {
-        $arguments += '-Force'
-    }
-    if ($ScanOnly) { $arguments += '-ScanOnly' }
-    if ($DryRun) { $arguments += '-DryRun' }
+    if ($Force) { $command += ' -Force' }
+    if ($ScanOnly) { $command += ' -ScanOnly' }
+    if ($DryRun) { $command += ' -DryRun' }
+    if ($TemporaryMicrosoftUpdateService) { $command += ' -TemporaryMicrosoftUpdateService' }
+    $command += '; exit $LASTEXITCODE'
 
-    if ($TemporaryMicrosoftUpdateService) {
-        $arguments += '-TemporaryMicrosoftUpdateService'
-    }
-
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
     Write-Log -Message 'Relaunching through 64-bit Windows PowerShell.'
-    $process = Start-Process -FilePath $nativePowerShell -ArgumentList $arguments -Wait -PassThru -WindowStyle Hidden
+    $process = Start-Process -FilePath $nativePowerShell -ArgumentList @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCommand
+    ) -Wait -PassThru -WindowStyle Hidden
     return $process.ExitCode
 }
 
@@ -358,7 +352,22 @@ function Save-State {
         OsVersion = [Environment]::OSVersion.VersionString
     }
 
-    $state | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $script:StateFile -Encoding UTF8
+    # Write to a same-directory temp file, then atomically publish the JSON.
+    # A crash must not leave a truncated state file behind.
+    $tempFile = Join-Path -Path $StateRoot -ChildPath ("state.{0}.tmp" -f [guid]::NewGuid().ToString('N'))
+    try {
+        $json = $state | ConvertTo-Json -Depth 4
+        [System.IO.File]::WriteAllText($tempFile, $json, (New-Object System.Text.UTF8Encoding($false)))
+        if (Test-Path -LiteralPath $script:StateFile -PathType Leaf) {
+            [System.IO.File]::Replace($tempFile, $script:StateFile, $null)
+        } else {
+            [System.IO.File]::Move($tempFile, $script:StateFile)
+        }
+    } finally {
+        if (Test-Path -LiteralPath $tempFile -PathType Leaf) {
+            Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Test-RecentSuccessfulRun {
@@ -498,7 +507,10 @@ function Invoke-DriverUpdateDeployment {
             try {
                 $canRequestUserInput = [bool]$update.InstallationBehavior.CanRequestUserInput
             } catch {
-                $canRequestUserInput = $false
+                # Fail closed: an unreadable interaction flag must not be installed silently.
+                Write-Log -Level 'WARN' -Message "Skipping update; interaction requirement is unknown: $($update.Title)"
+                Add-DriverResult -Update $update -Status 'Skipped' -Detail 'InteractionUnknown'
+                continue
             }
 
             if ($canRequestUserInput) {
@@ -663,7 +675,9 @@ try {
             exit $ExitCodes.ConcurrentRun
         }
     }
-    try { Rotate-Log } catch { Write-Output "Log rotation warning: $($_.Exception.Message)" }
+    if ($lockAcquired) {
+        try { Rotate-Log } catch { Write-Output "Log rotation warning: $($_.Exception.Message)" }
+    }
     $exitCode = Invoke-DriverUpdateDeployment
     Write-Log -Message "Exit code: $exitCode"
     exit $exitCode

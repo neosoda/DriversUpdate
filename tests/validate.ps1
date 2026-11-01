@@ -85,3 +85,43 @@ $script:Force = $true
 Assert-Equal (Test-RecentSuccessfulRun) $false 'Force bypasses throttle'
 
 Write-Output 'PASS: syntax, config, filters, scan interval, audit/force bypass'
+
+# Verify the public entry points and reject accidental reintroduction of legacy scripts.
+$manual = Join-Path $root 'DriversUpdate-Manual.ps1'
+$manualTokens = $null
+$manualErrors = $null
+$manualAst = [System.Management.Automation.Language.Parser]::ParseFile($manual, [ref]$manualTokens, [ref]$manualErrors)
+if ($manualErrors.Count -gt 0) {
+    throw ("Manual script PowerShell syntax errors: " + ($manualErrors | ForEach-Object { $_.Message } | Out-String))
+}
+$entryPoints = @(Get-ChildItem -LiteralPath $root -Filter '*.ps1' -File | Select-Object -ExpandProperty Name | Sort-Object)
+$expectedEntryPoints = @('DriversUpdate-Manual.ps1', 'force_update_drivers_gpo_hardened.ps1' | Sort-Object)
+if (($entryPoints -join ',') -cne ($expectedEntryPoints -join ',')) {
+    throw "Expected exactly two root scripts. Found: $($entryPoints -join ', ')"
+}
+$manualFunctions = @($manualAst.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
+}, $true) | ForEach-Object { $_.Name })
+foreach ($name in @('Invoke-ManualDriverUpdate', 'Show-LastState', 'Show-RecentLog')) {
+    if ($manualFunctions -cnotcontains $name) { throw "Manual menu function missing: $name" }
+}
+if (-not $manualAst.Extent.Text.Contains("Type INSTALLER")) { throw 'Manual install confirmation is missing' }
+if (-not $manualAst.Extent.Text.Contains("force_update_drivers_gpo_hardened.ps1")) { throw 'Manual must call GPO engine' }
+
+# Configuration must reject invalid JSON or unsupported values.
+$script:ConfigPath = Join-Path $env:TEMP 'driversupdate-ci-invalid.json'
+try {
+    '{"ExcludedDriverClasses":' | Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
+    $rejected = $false
+    try { $null = Get-DriverConfiguration } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Malformed JSON must be rejected' }
+
+    '{"ExcludedDriverClasses":"Net"}' | Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
+    $rejected = $false
+    try { $null = Get-DriverConfiguration } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Non-array config value must be rejected' }
+} finally {
+    Remove-Item -LiteralPath $script:ConfigPath -ErrorAction SilentlyContinue
+}
+Write-Output 'PASS: two entry points, interactive confirmation, invalid config rejection'
