@@ -20,7 +20,7 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile($engine, [ref]$
 $functions = @{}
 $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
     ForEach-Object { $functions[$_.Name] = $_.Extent.Text }
-foreach ($name in @('ConvertTo-DriverSelection', 'Read-InteractiveDriverChoice', 'Get-ComPropertyValue', 'Get-DriverExclusionReason', 'Get-DriverEligibilityReason')) {
+foreach ($name in @('ConvertTo-DriverSelection', 'Read-InteractiveDriverChoice', 'Get-ComPropertyValue', 'Get-DriverExclusionReason', 'Get-DriverEligibilityReason', 'Get-DriverReasonFrench', 'Write-DriverOverview')) {
     if (-not $functions.ContainsKey($name)) { throw "Missing function: $name" }
     . ([scriptblock]::Create($functions[$name]))
 }
@@ -62,6 +62,11 @@ $updates = [pscustomobject]@{
     )
 }
 $updates | Add-Member -MemberType ScriptMethod -Name Item -Value { param([int]$index) return $this.Items[$index] }
+
+$overview = Write-DriverOverview -Updates $updates
+if ((@($overview.EligibleNumbers) -join ',') -cne '1,3') {
+    throw 'The French overview must preserve only eligible driver numbers'
+}
 
 function Read-Host {
     param([string]$Prompt)
