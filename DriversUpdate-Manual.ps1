@@ -175,7 +175,7 @@ function Invoke-ManualDriverUpdate {
     if (-not (Test-IsAdministrator)) {
         Write-Host ''
         Write-Host 'Cette opération nécessite des droits administrateur.' -ForegroundColor Yellow
-        Write-Host 'Fermez cette fenêtre et ouvrez Windows PowerShell avec « Exécuter en tant qu’administrateur ».'
+        Write-Host "Fermez cette fenêtre et ouvrez Windows PowerShell avec « Exécuter en tant qu’administrateur »."
         return
     }
 
