@@ -449,18 +449,23 @@ function Save-State {
 
     # Write to a same-directory temp file, then atomically publish the JSON.
     # A crash must not leave a truncated state file behind.
-    $tempFile = Join-Path -Path $StateRoot -ChildPath ("state.{0}.tmp" -f [guid]::NewGuid().ToString('N'))
+    $uniqueId = [guid]::NewGuid().ToString('N')
+    $tempFile = Join-Path -Path $StateRoot -ChildPath ("state.{0}.tmp" -f $uniqueId)
+    $backupFile = Join-Path -Path $StateRoot -ChildPath ("state.{0}.bak" -f $uniqueId)
     try {
         $json = $state | ConvertTo-Json -Depth 4
         [System.IO.File]::WriteAllText($tempFile, $json, ([System.Text.UTF8Encoding]::new($false)))
         if (Test-Path -LiteralPath $script:StateFile -PathType Leaf) {
-            [System.IO.File]::Replace($tempFile, $script:StateFile, $null)
+            # .NET Framework 4.x on Windows PowerShell 5.1 requires a valid backup path.
+            [System.IO.File]::Replace($tempFile, $script:StateFile, $backupFile)
         } else {
             [System.IO.File]::Move($tempFile, $script:StateFile)
         }
     } finally {
-        if (Test-Path -LiteralPath $tempFile -PathType Leaf) {
-            Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
+        foreach ($file in @($tempFile, $backupFile)) {
+            if (Test-Path -LiteralPath $file -PathType Leaf) {
+                Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+            }
         }
     }
 }
