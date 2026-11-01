@@ -11,7 +11,7 @@
 [![Version 2.0](https://img.shields.io/badge/version-2.0-7283F6)](force_update_drivers_gpo_hardened.ps1)
 
 **L'automatisation des pilotes Windows pensée pour les parcs administrés.**  
-Sans module externe · Sans interface utilisateur · Sans redémarrage forcé
+Sans module externe · GPO silencieuse ou menu manuel · Sans redémarrage forcé
 
 [**Démarrer**](#démarrage-rapide) · [**Déployer via GPO**](#déploiement-par-gpo) · [**Configurer**](#configuration-des-filtres) · [**Superviser**](#journaux-et-supervision)
 
@@ -46,9 +46,9 @@ cd DriversUpdate
 powershell.exe -NoProfile -File .\force_update_drivers_gpo_hardened.ps1 -ScanOnly
 ~~~
 
-Pas de Git ? Téléchargez le [script principal](force_update_drivers_gpo_hardened.ps1) et placez-le dans un dossier local.
+Pas de Git ? Téléchargez le [moteur GPO](force_update_drivers_gpo_hardened.ps1) et, pour le menu, [l'interface manuelle](DriversUpdate-Manual.ps1). Les deux fichiers doivent être dans le même dossier.
 
-### Trois modes, un seul script
+### Deux scripts, un moteur commun
 
 | Mode | Commande | Effet |
 | :--- | :--- | :--- |
@@ -69,6 +69,16 @@ powershell.exe -NoProfile -File .\force_update_drivers_gpo_hardened.ps1
 # 4. Relancer sans attendre l'intervalle minimal de 24 heures
 powershell.exe -NoProfile -File .\force_update_drivers_gpo_hardened.ps1 -Force
 ~~~
+
+### Lancement manuel interactif
+
+Ouvrez **Windows PowerShell en administrateur**, puis lancez :
+
+~~~powershell
+powershell.exe -NoProfile -File .\DriversUpdate-Manual.ps1
+~~~
+
+Le menu permet de rechercher, simuler, installer après **confirmation explicite**, afficher le dernier état et consulter les logs. Il appelle toujours le moteur GPO dans un processus Windows PowerShell 5.1 distinct : mêmes filtres, mêmes règles WSUS/GPO, mêmes résultats et mêmes codes retour. **Conservez les deux fichiers côte à côte.** Le menu n'est pas destiné à une tâche planifiée.
 
 > [!NOTE]
 > Les modes Scan et Simulation utilisent aujourd'hui **la même logique de sélection**. Ils peuvent démarrer les services Windows Update nécessaires et écrivent des journaux/états locaux, mais **n'acceptent pas les EULA, ne téléchargent pas et n'installent pas** de pilotes. L'option <code>-Force</code> ignore uniquement l'intervalle de scan : elle ne neutralise ni les GPO ni les filtres de sécurité.
@@ -243,33 +253,26 @@ L'intégration GLPI/Zabbix consiste à **collecter ce fichier JSON ou les codes 
 | Élément | Statut |
 | :--- | :--- |
 | Windows 10 / Windows 11 | ✅ Cibles prévues |
-| Windows PowerShell 5.1 | ✅ Syntaxe et logique testées en CI |
+| Windows PowerShell 5.1 | ✅ Cible des tests PowerShell (exécution à confirmer sur Windows) |
 | Tâche planifiée GPO / SYSTEM | ✅ Mode de déploiement conçu pour cet usage |
 | WUA / WSUS / stratégies de source | ✅ Pris en compte dans le script |
 | Installation réelle sur un parc | ⚠️ **À valider sur vos postes pilotes** |
 | Modules PowerShell supplémentaires | ✅ Aucun requis à l'exécution |
 
-Le workflow [PowerShell CI](.github/workflows/powershell-ci.yml) vérifie la **syntaxe**, des **scénarios de logique isolée** et les erreurs **PSScriptAnalyzer**, sous Windows PowerShell 5.1. Il ne simule **ni l'API COM Windows Update réelle ni l'installation physique des pilotes**.
+Le workflow [PowerShell CI](.github/workflows/powershell-ci.yml) est prévu pour vérifier la **syntaxe des deux scripts**, des **scénarios de logique isolée** et les erreurs **PSScriptAnalyzer**, sous Windows PowerShell 5.1. En cas de crédits Actions indisponibles, lancez les tests localement. Il ne simule **ni l'API COM Windows Update réelle ni l'installation physique des pilotes**.
 
 ~~~powershell
 powershell.exe -NoProfile -File .\tests\validate.ps1
 ~~~
 
-<details>
-<summary><strong>Versions historiques et migration</strong></summary>
+### Deux scripts uniquement
 
-<br>
-
-| Fichier | Statut |
+| Script | Usage |
 | :--- | :--- |
-| [force_update_drivers_gpo_hardened.ps1](force_update_drivers_gpo_hardened.ps1) | **V2 recommandée** |
-| [force_update_driversV2_pourGPO.ps1](force_update_driversV2_pourGPO.ps1) | Ancienne version — dépréciée |
-| [force_update_driversV2bis.ps1](force_update_driversV2bis.ps1) | Ancienne version interactive — dépréciée |
+| [force_update_drivers_gpo_hardened.ps1](force_update_drivers_gpo_hardened.ps1) | **GPO / SYSTEM**, sans interaction. Nom conservé pour les déploiements existants. |
+| [DriversUpdate-Manual.ps1](DriversUpdate-Manual.ps1) | **Manuel**, menu interactif et confirmation avant installation ; utilise le script GPO. |
 
-Le nom du script principal est inchangé pour faciliter la migration depuis les GPO existantes. Les scripts historiques restent accessibles, mais les nouveaux déploiements doivent cibler la V2.
-
-</details>
-
+Les deux anciens scripts V2 ont été retirés pour éviter des déploiements divergents. Ils restent accessibles dans l'historique Git, pas dans la branche courante. Ne copiez pas le script manuel dans une GPO.
 ---
 
 <div align="center">

@@ -13,9 +13,12 @@ jobs:
       - name: Validate PowerShell 5.1 syntax and logic
         shell: powershell
         run: .\tests\validate.ps1
-      - name: PSScriptAnalyzer errors
+      - name: PSScriptAnalyzer errors (both entry points)
         shell: powershell
         run: |
           Install-Module PSScriptAnalyzer -Scope CurrentUser -Force -Repository PSGallery
-          $issues = @(Invoke-ScriptAnalyzer -Path .\force_update_drivers_gpo_hardened.ps1 -Severity Error)
+          $issues = @(
+            Invoke-ScriptAnalyzer -Path .\force_update_drivers_gpo_hardened.ps1 -Severity Error
+            Invoke-ScriptAnalyzer -Path .\DriversUpdate-Manual.ps1 -Severity Error
+          )
           if ($issues.Count -gt 0) { $issues | Format-Table; exit 1 }
