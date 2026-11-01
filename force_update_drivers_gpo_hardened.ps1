@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$LogRoot = "$env:ProgramData\DriversUpdate\logs",
     [string]$StateRoot = "$env:ProgramData\DriversUpdate\state",
@@ -9,7 +9,8 @@ param(
     [string]$ConfigPath = "$env:ProgramData\DriversUpdate\config.json",
     [bool]$AcceptEula = $true,
     [switch]$TemporaryMicrosoftUpdateService,
-    [switch]$Interactive
+    [switch]$Interactive,
+    [switch]$UserFacing
 )
 
 Set-StrictMode -Version Latest
@@ -60,7 +61,7 @@ function Write-Log {
     )
 
     $line = '{0} [{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss.fff zzz'), $Level, $Message
-    Write-Host $line
+    if (-not $UserFacing) { Write-Host $line }
 
     try {
         Add-Content -LiteralPath $script:LogFile -Value $line -Encoding UTF8
@@ -118,6 +119,7 @@ function Invoke-NativePowerShellIfRequired {
     if ($ScanOnly) { $command += ' -ScanOnly' }
     if ($DryRun) { $command += ' -DryRun' }
     if ($Interactive) { $command += ' -Interactive' }
+    if ($UserFacing) { $command += ' -UserFacing' }
     if ($TemporaryMicrosoftUpdateService) { $command += ' -TemporaryMicrosoftUpdateService' }
     $command += '; exit $LASTEXITCODE'
 
@@ -337,42 +339,103 @@ function ConvertTo-DriverSelection {
     foreach ($number in ($selected.Keys | Sort-Object)) { Write-Output ([int]$number) }
 }
 
-function Read-InteractiveDriverChoice {
+function Get-DriverReasonFrench {
+    param([string]$Reason)
+
+    switch -Regex ($Reason) {
+        '^ExcludedClass:' { return "Catégorie exclue ($($Reason.Substring(14)))" }
+        '^ExcludedTitle:' { return "Titre exclu ($($Reason.Substring(14)))" }
+        '^NotAllowlisted$' { return "Non autorisé par la liste des pilotes" }
+        '^RequiresInteraction$' { return "Nécessite une intervention utilisateur" }
+        '^InteractionUnknown$' { return "Installation silencieuse non garantie" }
+        '^EulaNotAccepted$' { return "Licence non acceptée" }
+        '^EulaUnknown$' { return "Licence impossible à vérifier" }
+        default { return $Reason }
+    }
+}
+
+function Write-DriverOverview {
     param([Parameter(Mandatory = $true)]$Updates)
+
     $eligible = New-Object 'System.Collections.Generic.List[int]'
+    $excluded = 0
     Write-Host ''
-    Write-Host 'PILOTES DETECTES - selection manuelle' -ForegroundColor Cyan
-    Write-Host 'Les pilotes exclus ne sont pas selectionnables.' -ForegroundColor DarkGray
+    Write-Host '  PILOTES DISPONIBLES SUR CET ORDINATEUR' -ForegroundColor Cyan
+    Write-Host '  --------------------------------------------------------' -ForegroundColor DarkGray
+
     for ($index = 0; $index -lt $Updates.Count; $index++) {
         $update = $Updates.Item($index)
         $number = $index + 1
         $reason = Get-DriverEligibilityReason -Update $update
+        Write-Host ("  [{0}] {1}" -f $number, $update.Title) -ForegroundColor White
+        $manufacturer = Get-ComPropertyValue -Object $update -Name 'DriverManufacturer'
+        $className = Get-ComPropertyValue -Object $update -Name 'DriverClass'
+        if ($manufacturer -or $className) {
+            Write-Host ("      {0} - {1}" -f $manufacturer, $className) -ForegroundColor DarkGray
+        }
         if ($reason) {
-            Write-Host ("[{0,2}] EXCLU ({1}) - {2}" -f $number, $reason, $update.Title) -ForegroundColor DarkYellow
+            $excluded++
+            Write-Host ("      EXCLU : {0}" -f (Get-DriverReasonFrench -Reason $reason)) -ForegroundColor DarkYellow
         } else {
             $eligible.Add($number)
-            Write-Host ("[{0,2}] OK - {1}" -f $number, $update.Title) -ForegroundColor Green
+            Write-Host '      Autorisé pour une installation silencieuse' -ForegroundColor Green
         }
-        Write-Host ("     {0} / {1}" -f (Get-ComPropertyValue -Object $update -Name 'DriverManufacturer'), (Get-ComPropertyValue -Object $update -Name 'DriverClass')) -ForegroundColor DarkGray
+        Write-Host ''
     }
+
+    Write-Host ("  Bilan : {0} autorisé(s), {1} exclu(s)." -f $eligible.Count, $excluded) -ForegroundColor Cyan
+    Write-Host '  Les exclusions protègent notamment les pilotes sensibles.' -ForegroundColor DarkGray
+    return [pscustomobject]@{ EligibleNumbers = @($eligible.ToArray()) }
+}
+
+function Read-InteractiveDriverChoice {
+    param([Parameter(Mandatory = $true)]$Updates)
+
+    $overview = Write-DriverOverview -Updates $Updates
+    $eligible = @($overview.EligibleNumbers)
     if ($eligible.Count -eq 0) {
-        Write-Host 'Aucun pilote eligible.' -ForegroundColor Yellow
+        Write-Host "  Aucun pilote ne peut être installé avec les filtres actuels." -ForegroundColor Yellow
         return [pscustomobject]@{ Cancelled = $true; SelectedIndices = @() }
     }
+
     Write-Host ''
-    Write-Host 'Numeros : 1,3-5 | T : tous les eligibles | 0 : annuler'
+    Write-Host '  ÉTAPE 2/3 - CHOIX DES PILOTES' -ForegroundColor Cyan
+    Write-Host '  Saisissez uniquement les numéros autorisés.'
+    Write-Host '  Exemples : 1,3 (deux pilotes) | 1-3 (plage de pilotes)'
+    Write-Host '  T = tous les pilotes autorisés | 0 = annuler'
     while ($true) {
-        $answer = Read-Host 'Votre selection'
-        try { $selected = @(ConvertTo-DriverSelection -InputText $answer -EligibleNumbers $eligible.ToArray() -MaxIndex $Updates.Count) }
-        catch { Write-Host $_.Exception.Message -ForegroundColor Yellow; continue }
-        if ($selected.Count -eq 0) { return [pscustomobject]@{ Cancelled = $true; SelectedIndices = @() } }
-        Write-Host ''
-        Write-Host 'Installation prevue :' -ForegroundColor Yellow
-        foreach ($number in $selected) { Write-Host ("  - {0}" -f $Updates.Item($number - 1).Title) }
-        Write-Host 'Les pilotes seront telecharges et installes; redemarrage potentiellement necessaire.' -ForegroundColor Yellow
-        if ((Read-Host 'Tapez INSTALLER pour confirmer') -cne 'INSTALLER') {
+        $answer = Read-Host '  Numéros à installer'
+        if ($answer.Trim() -eq '?') {
+            Write-Host '  Exemple de saisie : 1,3-5 ; les pilotes exclus ne peuvent pas être choisis.' -ForegroundColor DarkCyan
+            continue
+        }
+        try {
+            $selected = @(ConvertTo-DriverSelection -InputText $answer -EligibleNumbers $eligible -MaxIndex $Updates.Count)
+        } catch {
+            Write-Host ("  Choix refusé : {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+            Write-Host '  Corrigez la saisie, ou tapez 0 pour annuler.'
+            continue
+        }
+        if ($selected.Count -eq 0) {
+            Write-Host '  Installation annulée : aucun téléchargement effectué.' -ForegroundColor Yellow
             return [pscustomobject]@{ Cancelled = $true; SelectedIndices = @() }
         }
+
+        Write-Host ''
+        Write-Host '  ÉTAPE 3/3 - VÉRIFICATION AVANT INSTALLATION' -ForegroundColor Cyan
+        foreach ($number in $selected) {
+            Write-Host ("   - {0}" -f $Updates.Item($number - 1).Title)
+        }
+        Write-Host ("  Total : {0} pilote(s) sélectionné(s)." -f $selected.Count)
+        Write-Host "  L'installation peut nécessiter un redémarrage de Windows." -ForegroundColor Yellow
+        Write-Host '  Aucun redémarrage automatique ne sera déclenché.'
+        Write-Host ''
+        $confirmation = Read-Host '  Tapez INSTALLER pour confirmer (autre réponse = annuler)'
+        if ($confirmation -cne 'INSTALLER') {
+            Write-Host '  Installation annulée. Aucun pilote téléchargé.' -ForegroundColor Yellow
+            return [pscustomobject]@{ Cancelled = $true; SelectedIndices = @() }
+        }
+        Write-Host '  Confirmation reçue.' -ForegroundColor Green
         return [pscustomobject]@{ Cancelled = $false; SelectedIndices = @($selected) }
     }
 }
@@ -587,6 +650,11 @@ function Invoke-DriverUpdateDeployment {
             }
 
             $criteria = "IsInstalled=0 and IsHidden=0 and Type='Driver'"
+            if ($UserFacing) {
+                Write-Host '  ÉTAPE 1/3 - RECHERCHE WINDOWS UPDATE' -ForegroundColor Cyan
+                Write-Host '  Recherche des pilotes en cours...'
+                Write-Host "  Cette étape peut prendre quelques minutes." -ForegroundColor DarkGray
+            }
             Write-Log -Message "Searching driver updates with criteria: $criteria"
             $script:ScanAttempted = $true
             $searchResult = $searcher.Search($criteria)
@@ -594,6 +662,7 @@ function Invoke-DriverUpdateDeployment {
             $script:ScanSucceeded = $true
             $updates = $searchResult.Updates
             $updatesFound = $updates.Count
+            if ($UserFacing) { Write-Host ("  {0} mise(s) à jour détectée(s)." -f $updatesFound) -ForegroundColor Green }
             Write-Log -Message "Search result: $(Get-OperationResultName -ResultCode ([int]$searchResult.ResultCode)); updates found: $updatesFound."
         } catch {
             Write-Log -Level 'ERROR' -Message "Driver update search failed: $($_.Exception.Message)"
@@ -602,11 +671,16 @@ function Invoke-DriverUpdateDeployment {
         }
 
         if ($updatesFound -eq 0) {
+            if ($UserFacing) { Write-Host '  Aucun nouveau pilote à proposer pour cet ordinateur.' -ForegroundColor Green }
             Write-Log -Message 'No applicable driver update found.'
             Save-State -ExitCode $ExitCodes.Success -Outcome 'NoUpdatesFound' -UpdatesFound 0
             return $ExitCodes.Success
         }
 
+        if ($UserFacing -and ($ScanOnly -or $DryRun)) {
+            $null = Write-DriverOverview -Updates $updates
+            Write-Host "  Recherche terminée : aucun téléchargement, aucune installation." -ForegroundColor Green
+        }
         $interactiveSelectedIndices = $null
         if ($Interactive) {
             $choice = Read-InteractiveDriverChoice -Updates $updates
@@ -652,6 +726,7 @@ function Invoke-DriverUpdateDeployment {
         }
 
         if ($installCandidates.Count -eq 0) {
+            if ($UserFacing) { Write-Host "  Aucun pilote autorisé n'a été retenu." -ForegroundColor Yellow }
             Write-Log -Level 'WARN' -Message 'No silent install candidate remains after filtering.'
             Save-State -ExitCode $ExitCodes.Success -Outcome 'NoEligibleCandidates' -UpdatesFound $updatesFound
             return $ExitCodes.Success
@@ -675,6 +750,11 @@ function Invoke-DriverUpdateDeployment {
         $partialFailure = $false
         if ($downloadCollection.Count -gt 0) {
             try {
+                if ($UserFacing) {
+                    Write-Host ''
+                    Write-Host ("  TÉLÉCHARGEMENT DE {0} PILOTE(S)" -f $downloadCollection.Count) -ForegroundColor Cyan
+                    Write-Host '  Merci de ne pas fermer cette fenêtre pendant cette opération.'
+                }
                 Write-Log -Message "Downloading $($downloadCollection.Count) driver update(s)."
                 $downloader = $session.CreateUpdateDownloader()
                 $downloader.Updates = $downloadCollection
@@ -714,6 +794,11 @@ function Invoke-DriverUpdateDeployment {
         }
 
         try {
+            if ($UserFacing) {
+                Write-Host ''
+                Write-Host ("  INSTALLATION DE {0} PILOTE(S)" -f $readyToInstall.Count) -ForegroundColor Cyan
+                Write-Host '  Installation en cours... Ne redémarrez pas Windows maintenant.'
+            }
             Write-Log -Message "Installing $($readyToInstall.Count) driver update(s)."
             $installer = $session.CreateUpdateInstaller()
             $installer.Updates = $readyToInstall
