@@ -11,7 +11,7 @@
 [![Version 2.0](https://img.shields.io/badge/version-2.0-7283F6)](force_update_drivers_gpo_hardened.ps1)
 
 **L'automatisation des pilotes Windows pensée pour les parcs administrés.**  
-Sans module externe · Sans interface utilisateur · Sans redémarrage forcé
+Sans module externe · Menu interactif facultatif · Sans redémarrage forcé
 
 [**Démarrer**](#démarrage-rapide) · [**Déployer via GPO**](#déploiement-par-gpo) · [**Configurer**](#configuration-des-filtres) · [**Superviser**](#journaux-et-supervision)
 
@@ -72,6 +72,37 @@ powershell.exe -NoProfile -File .\force_update_drivers_gpo_hardened.ps1 -Force
 
 > [!NOTE]
 > Les modes Scan et Simulation utilisent aujourd'hui **la même logique de sélection**. Ils peuvent démarrer les services Windows Update nécessaires et écrivent des journaux/états locaux, mais **n'acceptent pas les EULA, ne téléchargent pas et n'installent pas** de pilotes. L'option <code>-Force</code> ignore uniquement l'intervalle de scan : elle ne neutralise ni les GPO ni les filtres de sécurité.
+
+## Console interactive
+
+Pour un poste Windows utilisé manuellement, **DriversUpdate dispose désormais d'une console à menu**, permettant d'inspecter les pilotes et de choisir ceux à installer. Le déploiement GPO reste non interactif par défaut.
+
+Dans **Windows PowerShell 5.1 ouvert en administrateur**, placez les deux scripts dans le même dossier et lancez :
+
+~~~powershell
+powershell.exe -NoProfile -File .\DriversUpdate-Interactive.ps1
+~~~
+
+| Choix | Fonction |
+| :--- | :--- |
+| **1 · Audit** | Recherche les pilotes sans les télécharger ni les installer. |
+| **2 · Simulation** | Évalue les candidats sans télécharger ni installer. |
+| **3 · Installation sélective** | Affiche les pilotes éligibles et exclus, puis permet de sélectionner précisément les pilotes. |
+| **4 · Rapport** | Consulte le dernier état JSON et les résultats par pilote. |
+| **5 · Journal** | Consulte les 60 dernières lignes du journal. |
+
+Dans l'option **3**, sélectionnez les numéros souhaités (par exemple **1,3-5**), **T** pour tous les pilotes éligibles, ou **0** pour annuler. Saisir exactement **INSTALLER** est indispensable avant tout téléchargement ou acceptation de licence.
+
+La sélection ne contourne ni les règles de sécurité ni les politiques WSUS/GPO. Les pilotes exclus (BIOS, firmware, réseau, stockage…) sont visibles, mais non sélectionnables. L'option 3 n'applique pas la temporisation de 24 h, pour permettre un usage manuel. Aucun redémarrage automatique.
+
+> [!IMPORTANT]
+> Lancez cette console dans un terminal local avec des droits administrateur. **Ne la lancez pas via une GPO, SYSTEM ou un flux d'entrée redirigé.** Conservez le script principal pour l'automatisation. Validez toute installation réelle sur un poste pilote.
+
+Pour lancer directement la sélection sans menu :
+
+~~~powershell
+powershell.exe -NoProfile -File .\force_update_drivers_gpo_hardened.ps1 -Interactive
+~~~
 
 ## Comment ça fonctionne ?
 
@@ -253,6 +284,7 @@ Le workflow [PowerShell CI](.github/workflows/powershell-ci.yml) vérifie la **s
 
 ~~~powershell
 powershell.exe -NoProfile -File .\tests\validate.ps1
+# Inclut les tests isolés du mode interactif.
 ~~~
 
 <details>
