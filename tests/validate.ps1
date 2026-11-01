@@ -95,7 +95,7 @@ if ($manualErrors.Count -gt 0) {
     throw ("Manual script PowerShell syntax errors: " + ($manualErrors | ForEach-Object { $_.Message } | Out-String))
 }
 $entryPoints = @(Get-ChildItem -LiteralPath $root -Filter '*.ps1' -File | Select-Object -ExpandProperty Name | Sort-Object)
-$expectedEntryPoints = @('DriversUpdate-Manual.ps1', 'force_update_drivers_gpo_hardened.ps1' | Sort-Object)
+$expectedEntryPoints = @('DriversUpdate-Manual.ps1', 'force_update_drivers_gpo_hardened.ps1')
 if (($entryPoints -join ',') -cne ($expectedEntryPoints -join ',')) {
     throw "Expected exactly two root scripts. Found: $($entryPoints -join ', ')"
 }
@@ -125,3 +125,35 @@ try {
     Remove-Item -LiteralPath $script:ConfigPath -ErrorAction SilentlyContinue
 }
 Write-Output 'PASS: two entry points, interactive confirmation, invalid config rejection'
+
+# Exercise the atomic JSON state publication (create and replace) without COM or Windows Update.
+if (-not $functions.ContainsKey('Save-State')) {
+    throw 'Save-State must exist'
+}
+. ([scriptblock]::Create($functions['Save-State']))
+$stateTestRoot = Join-Path $env:TEMP ("driversupdate-ci-state-" + [guid]::NewGuid().ToString('N'))
+New-Item -Path $stateTestRoot -ItemType Directory -Force | Out-Null
+try {
+    $script:StateFile = Join-Path $stateTestRoot 'state.json'
+    $script:DriverResults = New-Object System.Collections.ArrayList
+    $script:ScanAttempted = $true
+    $script:ScanSucceeded = $true
+    $script:UpdateSource = 'PolicyDefault'
+    $ScriptName = 'DriversUpdateGpo'
+    $ScriptVersion = '2.0.0'
+    $ScanOnly = $true
+    $DryRun = $false
+    $script:FakeState = $null
+    Save-State -ExitCode 0 -Outcome 'ScanOnly' -UpdatesFound 1
+    $saved = Get-Content -LiteralPath $script:StateFile -Raw | ConvertFrom-Json -ErrorAction Stop
+    Assert-Equal $saved.LastOutcome 'ScanOnly' 'Atomic initial publication'
+
+    Save-State -ExitCode 103 -Outcome 'InvalidConfig'
+    $saved = Get-Content -LiteralPath $script:StateFile -Raw | ConvertFrom-Json -ErrorAction Stop
+    Assert-Equal $saved.LastExitCode 103 'Atomic replacement'
+    $tempFiles = @(Get-ChildItem -LiteralPath $stateTestRoot -Filter '*.tmp' -File)
+    Assert-Equal $tempFiles.Count 0 'No temporary state files left behind'
+} finally {
+    Remove-Item -LiteralPath $stateTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+Write-Output 'PASS: atomic state create and replace'
