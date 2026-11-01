@@ -153,8 +153,8 @@ try {
     Save-State -ExitCode 103 -Outcome 'InvalidConfig'
     $saved = Get-Content -LiteralPath $script:StateFile -Raw | ConvertFrom-Json -ErrorAction Stop
     Assert-Equal $saved.LastExitCode 103 'Atomic replacement'
-    $tempFiles = @(Get-ChildItem -LiteralPath $stateTestRoot -Filter '*.tmp' -File)
-    Assert-Equal $tempFiles.Count 0 'No temporary state files left behind'
+    $tempFiles = @(Get-ChildItem -LiteralPath $stateTestRoot -File | Where-Object { $_.Extension -in @('.tmp', '.bak') })
+    Assert-Equal $tempFiles.Count 0 'No temporary or backup state files left behind'
 } finally {
     Remove-Item -LiteralPath $stateTestRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
