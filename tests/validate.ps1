@@ -68,6 +68,7 @@ Assert-Equal (Get-DriverExclusionReason -Update $safe) $null 'Allowlist match'
 
 $script:MinimumScanIntervalHours = 24
 $script:Force = $false
+$script:Interactive = $false
 $script:ScanOnly = $false
 $script:DryRun = $false
 $script:FakeState = [pscustomobject]@{
@@ -85,3 +86,5 @@ $script:Force = $true
 Assert-Equal (Test-RecentSuccessfulRun) $false 'Force bypasses throttle'
 
 Write-Output 'PASS: syntax, config, filters, scan interval, audit/force bypass'
+
+& (Join-Path $PSScriptRoot 'validate-interactive.ps1')
