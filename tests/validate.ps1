@@ -26,6 +26,7 @@ foreach ($required in @('Get-DriverExclusionReason', 'Test-RecentSuccessfulRun',
 }
 
 
+$script:UserFacing = $false
 $script:LogFile = Join-Path $env:TEMP 'driversupdate-ci-test.log'
 $testLogOutput = @(Write-Log -Message 'Pipeline purity check')
 if ($testLogOutput.Count -ne 0) { throw 'Write-Log must not emit data on the success pipeline' }
@@ -108,6 +109,15 @@ foreach ($name in @('Invoke-ManualDriverUpdate', 'Show-LastState', 'Show-RecentL
     if ($manualFunctions -cnotcontains $name) { throw "Manual menu function missing: $name" }
 }
 if (-not $manualAst.Extent.Text.Contains("'-Interactive'")) { throw 'Manual must request interactive selection' }
+if (-not $manualAst.Extent.Text.Contains("'-UserFacing'")) { throw 'Manual must request user-facing output from the engine' }
+$manualText = Get-Content -LiteralPath $manual -Raw -Encoding UTF8
+if (-not $manualText.Contains('Rechercher les pilotes disponibles') -or
+    -not $manualText.Contains('Choisir les pilotes')) {
+    throw 'The manual interface must expose clear French actions'
+}
+if ($manualText.Contains('Select and install drivers') -or $manualText.Contains('View last result')) {
+    throw 'The old English menu must not reappear'
+}
 if (-not $manualAst.Extent.Text.Contains("force_update_drivers_gpo_hardened.ps1")) { throw 'Manual must call GPO engine' }
 
 # Configuration must reject invalid JSON or unsupported values.
