@@ -66,6 +66,7 @@ Assert-Equal (Get-DriverExclusionReason -Update $safe) 'NotAllowlisted' 'Allowli
 $script:Configuration.IncludedTitleContains = @('Audio')
 Assert-Equal (Get-DriverExclusionReason -Update $safe) $null 'Allowlist match'
 
+$script:Interactive = $false
 $script:MinimumScanIntervalHours = 24
 $script:Force = $false
 $script:ScanOnly = $false
