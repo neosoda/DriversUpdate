@@ -322,7 +322,7 @@ function ConvertTo-DriverSelection {
         # Positive -match populates $Matches; -notmatch does not update it.
         if ($token -match '^\s*(\d+)(?:\s*-\s*(\d+))?\s*$') {
             $first = [int]$Matches[1]
-            $last = if ($Matches.ContainsKey('2')) { [int]$Matches[2] } else { $first }
+            $last = if ($Matches.ContainsKey(2)) { [int]$Matches[2] } else { $first }
         } else {
             throw "Saisie incorrecte : $token"
         }
