@@ -68,7 +68,6 @@ Assert-Equal (Get-DriverExclusionReason -Update $safe) $null 'Allowlist match'
 
 $script:MinimumScanIntervalHours = 24
 $script:Force = $false
-$script:Interactive = $false
 $script:ScanOnly = $false
 $script:DryRun = $false
 $script:FakeState = [pscustomobject]@{
@@ -86,5 +85,78 @@ $script:Force = $true
 Assert-Equal (Test-RecentSuccessfulRun) $false 'Force bypasses throttle'
 
 Write-Output 'PASS: syntax, config, filters, scan interval, audit/force bypass'
+
+# Verify the public entry points and reject accidental reintroduction of legacy scripts.
+$manual = Join-Path $root 'DriversUpdate-Manual.ps1'
+$manualTokens = $null
+$manualErrors = $null
+$manualAst = [System.Management.Automation.Language.Parser]::ParseFile($manual, [ref]$manualTokens, [ref]$manualErrors)
+if ($manualErrors.Count -gt 0) {
+    throw ("Manual script PowerShell syntax errors: " + ($manualErrors | ForEach-Object { $_.Message } | Out-String))
+}
+$entryPoints = @(Get-ChildItem -LiteralPath $root -Filter '*.ps1' -File | Select-Object -ExpandProperty Name | Sort-Object)
+$expectedEntryPoints = @('DriversUpdate-Manual.ps1', 'force_update_drivers_gpo_hardened.ps1')
+if (($entryPoints -join ',') -cne ($expectedEntryPoints -join ',')) {
+    throw "Expected exactly two root scripts. Found: $($entryPoints -join ', ')"
+}
+$manualFunctions = @($manualAst.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
+}, $true) | ForEach-Object { $_.Name })
+foreach ($name in @('Invoke-ManualDriverUpdate', 'Show-LastState', 'Show-RecentLog')) {
+    if ($manualFunctions -cnotcontains $name) { throw "Manual menu function missing: $name" }
+}
+if (-not $manualAst.Extent.Text.Contains("'-Interactive'")) { throw 'Manual must request interactive selection' }
+if (-not $manualAst.Extent.Text.Contains("force_update_drivers_gpo_hardened.ps1")) { throw 'Manual must call GPO engine' }
+
+# Configuration must reject invalid JSON or unsupported values.
+$script:ConfigPath = Join-Path $env:TEMP 'driversupdate-ci-invalid.json'
+try {
+    '{"ExcludedDriverClasses":' | Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
+    $rejected = $false
+    try { $null = Get-DriverConfiguration } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Malformed JSON must be rejected' }
+
+    '{"ExcludedDriverClasses":"Net"}' | Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
+    $rejected = $false
+    try { $null = Get-DriverConfiguration } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Non-array config value must be rejected' }
+} finally {
+    Remove-Item -LiteralPath $script:ConfigPath -ErrorAction SilentlyContinue
+}
+Write-Output 'PASS: two entry points, interactive confirmation, invalid config rejection'
+
+# Exercise the atomic JSON state publication (create and replace) without COM or Windows Update.
+if (-not $functions.ContainsKey('Save-State')) {
+    throw 'Save-State must exist'
+}
+. ([scriptblock]::Create($functions['Save-State']))
+$stateTestRoot = Join-Path $env:TEMP ("driversupdate-ci-state-" + [guid]::NewGuid().ToString('N'))
+New-Item -Path $stateTestRoot -ItemType Directory -Force | Out-Null
+try {
+    $StateRoot = $stateTestRoot
+    $script:StateFile = Join-Path $stateTestRoot 'state.json'
+    $script:DriverResults = New-Object System.Collections.ArrayList
+    $script:ScanAttempted = $true
+    $script:ScanSucceeded = $true
+    $script:UpdateSource = 'PolicyDefault'
+    $ScriptName = 'DriversUpdateGpo'
+    $ScriptVersion = '2.0.0'
+    $ScanOnly = $true
+    $DryRun = $false
+    $script:FakeState = $null
+    Save-State -ExitCode 0 -Outcome 'ScanOnly' -UpdatesFound 1
+    $saved = Get-Content -LiteralPath $script:StateFile -Raw | ConvertFrom-Json -ErrorAction Stop
+    Assert-Equal $saved.LastOutcome 'ScanOnly' 'Atomic initial publication'
+
+    Save-State -ExitCode 103 -Outcome 'InvalidConfig'
+    $saved = Get-Content -LiteralPath $script:StateFile -Raw | ConvertFrom-Json -ErrorAction Stop
+    Assert-Equal $saved.LastExitCode 103 'Atomic replacement'
+    $tempFiles = @(Get-ChildItem -LiteralPath $stateTestRoot -Filter '*.tmp' -File)
+    Assert-Equal $tempFiles.Count 0 'No temporary state files left behind'
+} finally {
+    Remove-Item -LiteralPath $stateTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+Write-Output 'PASS: atomic state create and replace'
 
 & (Join-Path $PSScriptRoot 'validate-interactive.ps1')

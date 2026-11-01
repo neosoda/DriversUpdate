@@ -3,7 +3,7 @@ Set-StrictMode -Version Latest
 
 $root = Split-Path -Parent $PSScriptRoot
 $engine = Join-Path $root 'force_update_drivers_gpo_hardened.ps1'
-$menu = Join-Path $root 'DriversUpdate-Interactive.ps1'
+$menu = Join-Path $root 'DriversUpdate-Manual.ps1'
 
 foreach ($file in @($engine, $menu)) {
     $tokens = $null
@@ -20,7 +20,7 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile($engine, [ref]$
 $functions = @{}
 $ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
     ForEach-Object { $functions[$_.Name] = $_.Extent.Text }
-foreach ($name in @('ConvertTo-DriverSelection', 'Read-InteractiveDriverChoice', 'Get-ComPropertyValue', 'Get-DriverExclusionReason')) {
+foreach ($name in @('ConvertTo-DriverSelection', 'Read-InteractiveDriverChoice', 'Get-ComPropertyValue', 'Get-DriverExclusionReason', 'Get-DriverEligibilityReason')) {
     if (-not $functions.ContainsKey($name)) { throw "Missing function: $name" }
     . ([scriptblock]::Create($functions[$name]))
 }
@@ -89,3 +89,8 @@ $cancelled = Read-InteractiveDriverChoice -Updates $updates
 if (-not $cancelled.Cancelled) { throw 'Installation must require explicit INSTALLER confirmation' }
 
 Write-Output 'PASS: interactive syntax, safe selection, exclusions, confirmation and cancellation'
+
+$missingFlag = [pscustomobject]@{ Title = 'Unknown interaction driver'; DriverClass = 'MEDIA'; EulaAccepted = $true }
+if ((Get-DriverEligibilityReason -Update $missingFlag) -cne 'InteractionUnknown') { throw 'Missing interaction flag must prevent installation' }
+if ((Get-DriverEligibilityReason -Update $updates.Items[1]) -cne 'ExcludedClass:Net') { throw 'Shared eligibility rule must enforce excluded driver classes' }
+Write-Output 'PASS: fail-closed eligibility'
