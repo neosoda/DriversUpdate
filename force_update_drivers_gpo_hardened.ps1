@@ -311,7 +311,7 @@ function ConvertTo-DriverSelection {
             throw "Saisie incorrecte : $token"
         }
         $first = [int]$Matches[1]
-        $last = if ($Matches[2]) { [int]$Matches[2] } else { $first }
+        $last = if ($Matches.ContainsKey('2')) { [int]$Matches[2] } else { $first }
         if ($first -lt 1 -or $last -lt $first -or $last -gt $MaxIndex) {
             throw "Plage hors limites : $token"
         }
@@ -443,7 +443,7 @@ function Save-State {
 }
 
 function Test-RecentSuccessfulRun {
-    if ($Force -or $ScanOnly -or $DryRun -or $MinimumScanIntervalHours -le 0) { return $false }
+    if ($Force -or $ScanOnly -or $DryRun -or $Interactive -or $MinimumScanIntervalHours -le 0) { return $false }
     $state = Get-PreviousState
     $previousDeployment = Get-PropertyOrNull -Object $state -Name 'LastSuccessfulDeploymentUtc'
     if (-not $previousDeployment -and $null -ne $state) {
