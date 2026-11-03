@@ -43,7 +43,7 @@ Remove-Item -LiteralPath $script:ConfigPath -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $script:LogFile -ErrorAction SilentlyContinue
 
 # Proxy SYSTEM : valider les options et refuser une configuration dangereuse.
-foreach ($name in @('Initialize-DriverProxy', 'Restore-DriverProxy', 'Set-DriverSessionProxy', 'Get-DriverProxyCredential', 'Set-DriverGlobalProxyCredentials')) {
+foreach ($name in @('Initialize-DriverProxy', 'Restore-DriverProxy', 'Protect-DriverProxyBackupDirectory', 'Set-DriverSessionProxy', 'Get-DriverProxyCredential', 'Set-DriverGlobalProxyCredentials')) {
     if (-not $functions.ContainsKey($name)) { throw "Missing SYSTEM proxy function: $name" }
 }
 $script:ConfigPath = Join-Path $env:TEMP ('driversupdate-proxy-ci-' + [guid]::NewGuid().ToString('N') + '.json')
