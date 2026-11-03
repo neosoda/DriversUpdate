@@ -6,7 +6,6 @@ param(
     [switch]$Force,
     [switch]$ScanOnly,
     [switch]$DryRun,
-    [string]$ConfigPath = "$env:ProgramData\DriversUpdate\config.json",
     [bool]$AcceptEula = $true,
     [switch]$TemporaryMicrosoftUpdateService,
     [switch]$Interactive,
@@ -18,7 +17,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $ScriptName = 'DriversUpdateGpo'
-$ScriptVersion = '2.1.0'
+$ScriptVersion = '3.0.0'
 
 $ExitCodes = @{
     Success = 0
@@ -47,6 +46,23 @@ $script:ProxyBackupRoot = Join-Path -Path $StateRoot -ChildPath 'proxy'
 $script:ProxyBackupPath = Join-Path -Path $script:ProxyBackupRoot -ChildPath 'winhttp-before-driversupdate.txt'
 $script:ProxyRegistryBackupPath = Join-Path -Path $script:ProxyBackupRoot -ChildPath 'winhttp-registry-before-driversupdate.json'
 $script:ProxyRecoveryReady = $false
+
+# ============================================================
+# CONFIGURATION LOCALE : modifier la copie deployee, jamais GitHub.
+# AUCUN autre fichier de configuration ou d'identifiants requis.
+# ============================================================
+$ProxyEnabled = $true                     # $false : connexion Windows Update habituelle
+$ProxyHost = '172.17.0.1'
+$ProxyPort = 3128
+$ProxyBypassList = '<local>'               # Ex. : '<local>;*.domaine.local'
+$ProxyUser = 'UTILISATEUR'                 # Vide si le proxy n'exige pas d'identifiants
+$ProxyPassword = 'MOT_DE_PASSE'            # Vide si aucune authentification
+$ProxyAuthScheme = 'Basic'                 # Basic, NTLM, Negotiate ou Digest
+
+# Exclusions de securite : a conserver dans tout deploiement automatique.
+$ExcludedDriverClasses = @('Firmware', 'Net', 'SCSIAdapter', 'HDC', 'DiskDrive')
+$ExcludedTitleContains = @('BIOS', 'Firmware')
+$IncludedTitleContains = @()
 
 function Initialize-LocalPath {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -116,8 +132,7 @@ function Invoke-NativePowerShellIfRequired {
     $pathLiteral = & $quote $PSCommandPath
     $logRootLiteral = & $quote $LogRoot
     $stateRootLiteral = & $quote $StateRoot
-    $configPathLiteral = & $quote $ConfigPath
-    $command = '& {0} -LogRoot {1} -StateRoot {2} -MinimumScanIntervalHours {3} -AcceptEula:${4} -ConfigPath {5}' -f $pathLiteral, $logRootLiteral, $stateRootLiteral, $MinimumScanIntervalHours, ([string]$AcceptEula).ToLowerInvariant(), $configPathLiteral
+    $command = '& {0} -LogRoot {1} -StateRoot {2} -MinimumScanIntervalHours {3} -AcceptEula:${4}' -f $pathLiteral, $logRootLiteral, $stateRootLiteral, $MinimumScanIntervalHours, ([string]$AcceptEula).ToLowerInvariant()
 
     if ($Force) { $command += ' -Force' }
     if ($ScanOnly) { $command += ' -ScanOnly' }
@@ -246,71 +261,36 @@ function Get-PropertyOrNull {
 }
 
 function Get-DriverConfiguration {
-    $config = [ordered]@{
-        ExcludedDriverClasses = @('Firmware', 'Net', 'SCSIAdapter', 'HDC', 'DiskDrive')
-        ExcludedTitleContains = @('BIOS', 'Firmware')
-        IncludedTitleContains = @()
+    # Configuration directement dans ce PS1 : pas de JSON ni de fichier DPAPI.
+    $mode = if ($ProxyEnabled) { 'Temporary' } else { 'System' }
+    if ($ProxyEnabled) {
+        if ([string]::IsNullOrWhiteSpace($ProxyHost) -or $ProxyHost -notmatch '^[A-Za-z0-9.-]+$') {
+            throw 'ProxyHost invalide : un nom DNS ou une adresse IPv4 est attendu.'
+        }
+        if ($ProxyPort -lt 1 -or $ProxyPort -gt 65535) { throw 'ProxyPort doit etre compris entre 1 et 65535.' }
+        if ($ProxyAuthScheme -notin @('Basic', 'NTLM', 'Negotiate', 'Digest')) {
+            throw 'ProxyAuthScheme invalide.'
+        }
+        if ([bool]$ProxyUser -xor [bool]$ProxyPassword) {
+            throw 'Le nom utilisateur et le mot de passe proxy doivent etre tous deux renseignes, ou tous deux vides.'
+        }
+        if ($ProxyUser -eq 'UTILISATEUR' -or $ProxyPassword -eq 'MOT_DE_PASSE') {
+            throw 'Identifiants proxy non configures : renseignez ProxyUser et ProxyPassword dans la copie locale du PS1.'
+        }
+    }
+    return [ordered]@{
+        ExcludedDriverClasses = @($ExcludedDriverClasses)
+        ExcludedTitleContains = @($ExcludedTitleContains)
+        IncludedTitleContains = @($IncludedTitleContains)
         Proxy = [ordered]@{
-            Mode = 'System'
-            Address = ''
-            BypassList = '<local>'
-            CredentialFile = ''
-            AuthenticationScheme = 'Basic'
+            Mode = $mode
+            Address = "$($ProxyHost):$ProxyPort"
+            BypassList = $ProxyBypassList
+            AuthenticationScheme = $ProxyAuthScheme
             UseWinHttpGlobalCredentials = $true
         }
     }
-    if (Test-Path -LiteralPath $ConfigPath -PathType Leaf) {
-        $inputConfig = Get-Content -LiteralPath $ConfigPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-        foreach ($key in @('ExcludedDriverClasses', 'ExcludedTitleContains', 'IncludedTitleContains')) {
-            $value = Get-PropertyOrNull -Object $inputConfig -Name $key
-            if ($null -ne $value) {
-                if ($value -isnot [array]) { throw "$key must be an array in $ConfigPath" }
-                foreach ($entry in $value) {
-                    if ($entry -isnot [string] -or [string]::IsNullOrWhiteSpace($entry)) {
-                        throw "$key contains an invalid string in $ConfigPath"
-                    }
-                }
-                $config[$key] = @($value)
-            }
-        }
-        $proxyInput = Get-PropertyOrNull -Object $inputConfig -Name 'Proxy'
-        if ($null -ne $proxyInput) {
-            if ($proxyInput -isnot [pscustomobject]) { throw "Proxy must be an object in $ConfigPath" }
-            foreach ($property in $proxyInput.PSObject.Properties) {
-                if (-not $config['Proxy'].Contains($property.Name)) { throw "Unsupported Proxy setting: $($property.Name)" }
-                if ($property.Name -eq 'UseWinHttpGlobalCredentials') {
-                    if ($property.Value -isnot [bool]) { throw 'Proxy.UseWinHttpGlobalCredentials must be a boolean' }
-                } else {
-                    if ($property.Value -isnot [string]) { throw "Proxy.$($property.Name) must be a string" }
-                }
-                $config['Proxy'][$property.Name] = $property.Value
-            }
-            $proxy = $config['Proxy']
-            if ($proxy.Mode -notin @('System', 'Temporary')) { throw 'Proxy.Mode must be System or Temporary' }
-            if ($proxy.Mode -eq 'Temporary') {
-                if (-not ($proxy.Address -match '^([A-Za-z0-9.-]+):([0-9]{1,5})$')) {
-                    throw 'Proxy.Address must contain a host or IPv4 address and port, without credentials or scheme'
-                }
-                $portNumber = [int]$Matches[2]
-                if ($portNumber -lt 1 -or $portNumber -gt 65535) { throw 'Proxy port must be between 1 and 65535' }
-                if ($proxy.AuthenticationScheme -notin @('Basic', 'NTLM', 'Negotiate', 'Digest')) {
-                    throw 'Unsupported Proxy.AuthenticationScheme'
-                }
-                if ($proxy.CredentialFile -and -not [IO.Path]::IsPathRooted($proxy.CredentialFile)) {
-                    throw 'Proxy.CredentialFile must be an absolute local path'
-                }
-                if ($proxy.CredentialFile -and $proxy.CredentialFile.StartsWith('\\')) {
-                    throw 'Proxy.CredentialFile must be local (DPAPI per computer)'
-                }
-            }
-        }
-        Write-Log -Message "Loaded driver filters from $ConfigPath"
-    } else {
-        Write-Log -Message 'Using built-in driver safety filters.'
-    }
-    return $config
 }
-
 
 # Le mode System utilise WinHTTP deja configure sur l'ordinateur.
 # Le mode Temporary remplace WinHTTP le temps du traitement et restaure son etat.
@@ -384,20 +364,6 @@ function Restore-DriverProxy {
     }
 }
 
-function Get-DriverProxyCredential {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw "Fichier d'identifiants proxy introuvable : $Path"
-    }
-    # Export-Clixml protege le mot de passe via DPAPI pour le compte ET la machine.
-    # Un fichier cree sous un compte utilisateur n'est pas lisible par SYSTEM.
-    $credential = Import-Clixml -LiteralPath $Path -ErrorAction Stop
-    if ($credential -isnot [System.Management.Automation.PSCredential]) {
-        throw "Le fichier $Path ne contient pas un PSCredential."
-    }
-    return $credential
-}
-
 function Set-DriverGlobalProxyCredentials {
     param(
         [Parameter(Mandatory = $true)][pscredential]$Credential,
@@ -467,9 +433,11 @@ function Initialize-DriverProxy {
     }
 
     $credential = $null
-    if ($proxy.CredentialFile) {
-        # Echouer AVANT la modification globale si le fichier DPAPI est illisible.
-        $credential = Get-DriverProxyCredential -Path $proxy.CredentialFile
+    if (-not [string]::IsNullOrWhiteSpace($ProxyUser)) {
+        # Identifiants uniquement en memoire (config PS1 locale).
+        # Ne jamais inscrire de mot de passe dans les journaux.
+        $securePassword = ConvertTo-SecureString -String $ProxyPassword -AsPlainText -Force
+        $credential = New-Object System.Management.Automation.PSCredential($ProxyUser, $securePassword)
     }
 
     # Fichier persistant permettant la recuperation au prochain lancement
@@ -482,7 +450,7 @@ function Initialize-DriverProxy {
     if ($proxy.BypassList) { $arguments += "bypass-list=$($proxy.BypassList)" }
     $null = Invoke-DriversNetsh -Arguments $arguments
 
-    if ($null -ne $credential -and $proxy.UseWinHttpGlobalCredentials) {
+    if ($null -ne $credential) {
         Set-DriverGlobalProxyCredentials -Credential $credential -Address $proxy.Address -Scheme $proxy.AuthenticationScheme
     }
     $script:ProxyCredential = $credential
@@ -842,7 +810,7 @@ function Invoke-DriverUpdateDeployment {
         }
         if ($TemporaryMicrosoftUpdateService) { Write-Log -Level 'WARN' -Message 'Deprecated switch ignored: V2 does not register Microsoft Update.' }
         try { $script:Configuration = Get-DriverConfiguration }
-        catch { Write-Log -Level 'ERROR' -Message "Invalid configuration: $($_.Exception.Message)"; Save-State -ExitCode $ExitCodes.PrerequisiteFailed -Outcome 'InvalidConfig'; return $ExitCodes.PrerequisiteFailed }
+        catch { Write-Log -Level 'ERROR' -Message "Configuration du script invalide: $($_.Exception.Message)"; Save-State -ExitCode $ExitCodes.PrerequisiteFailed -Outcome 'InvalidConfig'; return $ExitCodes.PrerequisiteFailed }
         $wuPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
         $auPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
         if ((Get-RegistryValueOrNull -Path $wuPath -Name 'ExcludeWUDriversInQualityUpdate') -eq 1 -or
