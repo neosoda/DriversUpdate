@@ -9,7 +9,6 @@
 ![Windows 10 / 11](https://img.shields.io/badge/Windows-10%20%2F%2011-087CD9?logo=windows11&logoColor=white)
 ![Windows PowerShell 5.1](https://img.shields.io/badge/PowerShell-5.1-3979C6?logo=powershell&logoColor=white)
 ![Licence MIT](https://img.shields.io/badge/Licence-MIT-6B7280)
-[![CI PowerShell](https://github.com/neosoda/DriversUpdate/actions/workflows/powershell-ci.yml/badge.svg?branch=main)](https://github.com/neosoda/DriversUpdate/actions/workflows/powershell-ci.yml)
 
 **2 scripts autonomes · Configuration intégrée · Proxy facultatif · GPO / SYSTEM · Aucun redémarrage automatique**
 
