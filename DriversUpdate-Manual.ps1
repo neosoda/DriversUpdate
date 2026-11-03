@@ -20,6 +20,34 @@ if (($PSVersionTable.PSEdition -ne 'Desktop') -or
     exit $LASTEXITCODE
 }
 
+# Elevation UAC automatique : un clic droit > "Executer avec PowerShell"
+# suffit. Ne jamais demander l'elevation pour une session non interactive.
+function Test-IsAdministrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
+    throw 'Le menu doit etre lance dans une console interactive, pas par GPO ou sous SYSTEM.'
+}
+
+if (-not (Test-IsAdministrator)) {
+    $powerShellExe = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Write-Host '  Droits administrateur necessaires : demande UAC en cours...' -ForegroundColor Yellow
+    try {
+        # Start-Process recompose les arguments : proteger le chemin avec des
+        # guillemets pour les dossiers contenant des espaces.
+        $quotedScriptPath = '"' + $PSCommandPath + '"'
+        Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $quotedScriptPath) -Verb RunAs -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Host ("  Elevation refusee ou impossible : {0}" -f $_.Exception.Message) -ForegroundColor Red
+        exit 101
+    }
+    # Le menu sera affiche dans la nouvelle console elevee uniquement.
+    exit 0
+}
+
 # Etat partage avec le moteur autonome ci-dessous.
 $LogRoot = Join-Path $env:ProgramData 'DriversUpdate\logs'
 $StateRoot = Join-Path $env:ProgramData 'DriversUpdate\state'
@@ -1149,11 +1177,6 @@ $programDataPath = Join-Path -Path $env:ProgramData -ChildPath 'DriversUpdate'
 $statePath = Join-Path -Path $programDataPath -ChildPath 'state\state.json'
 $logPath = Join-Path -Path $programDataPath -ChildPath 'logs\deploy.log'
 
-function Test-IsAdministrator {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
-    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
 
 function Get-ModeLabel {
     param([string]$Mode)
