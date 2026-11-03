@@ -154,29 +154,20 @@ Si les droits administrateur sont déjà présents, aucune deuxième fenêtre n'
  [0] Quitter
 ~~~
 
-### Cocher et installer les pilotes
+### Choisir et installer en un clic
 
-Après avoir choisi **2**, la recherche Windows Update affiche tous les pilotes trouvés sous forme de liste à cocher :
+Dans le menu, choisissez **2**. Une fenêtre Windows native s'ouvre après la recherche des pilotes :
 
-~~~text
-  [ ] 1. AOC International - Monitor
-  [ ] 2. Dell Firmware Driver Update
-      ! Pilote sensible : firmware
-  [ ] 3. ASIX Net Driver Update
-      ! Pilote sensible : réseau
+- **Cochez** les pilotes souhaités à la souris (ou au clavier avec la barre d'espace).
+- Utilisez **Tout cocher** ou **Tout décocher** si besoin.
+- Cliquez sur **Installer la sélection**. Le téléchargement et l'installation démarrent immédiatement.
+- **Annuler** ou fermer la fenêtre n'installe rien.
 
-  Numéro = cocher/décocher  |  T = tout cocher
-  A = tout décocher        |  V = vérifier et valider
-  0 = annuler
-~~~
+Il n'y a **plus de commande T/V, ni de confirmation RISQUES ou INSTALLER** à saisir. Aucun fichier externe n'est nécessaire : l'interface Windows Forms fait partie du script PowerShell.
 
-Tapez **1** pour cocher le moniteur : il devient **[x]**. Tapez **3** pour cocher également le pilote ASIX. Vous pouvez saisir **1,3** pour basculer plusieurs cases d'un coup.
+Si Windows Forms ne peut pas s'ouvrir (environnement sans interface graphique), le script bascule sur une sélection console simplifiée : saisir simplement **1,3** pour installer les pilotes 1 et 3, **T** pour tous, ou **0** pour annuler, sans validation supplémentaire.
 
-Tapez ensuite **V** pour voir le récapitulatif, puis **INSTALLER** pour démarrer le téléchargement et l'installation des pilotes sélectionnés. Les pilotes sensibles (réseau, firmware, stockage) nécessitent une confirmation supplémentaire : **RISQUES**, avant **INSTALLER**.
-
-**Différence importante avec la GPO :** en mode manuel uniquement, les pilotes avec `CanRequestUserInput = true` sont proposés, même s'ils sont exclus du déploiement automatique. Cela signifie que le programme d'installation *peut* demander une intervention, **pas** qu'il fonctionnera nécessairement : Windows Update peut encore refuser une installation interactive, notamment dans certains contextes « Exécuter en tant que ». Les pilotes sensibles sont signalés pour permettre une décision explicite. [Documentation Microsoft sur le comportement d'installation](https://learn.microsoft.com/en-us/windows/win32/wua_sdk/iinstallationbehavior-properties).
-
-Aucun téléchargement de pilote sélectionné n'est lancé avant confirmation. **Le script manuel ne doit pas être exécuté sous SYSTEM.**
+Les pilotes avec `CanRequestUserInput = true` restent proposés en manuel, mais certaines installations peuvent encore être refusées par Windows Update selon le contexte. Les filtres du script **GPO** ne sont pas modifiés. Le script ne provoque pas de redémarrage automatique.
 
 ## 📋 Diagnostic et journaux
 
