@@ -51,17 +51,26 @@ foreach ($src in @($gpoText, $manualText)) {
         throw 'A standalone script still depends on external configuration or PS1'
     }
 }
-# Le lanceur manuel demande une elevation seulement en mode interactif.
-if (-not $manualText.Contains('Start-Process -FilePath $powerShellExe') -or
-    -not $manualText.Contains('-Verb RunAs -ErrorAction Stop') -or
-    -not $manualText.Contains('if (-not (Test-IsAdministrator))')) {
-    throw 'Automatic UAC elevation is missing from the manual entry point'
+# Elevation fiable depuis l'Explorateur ou depuis PowerShell non-admin :
+# forcer une console dediee pour le chemin UAC, les hôtes x86 et les
+# consoles a entree redirigee. Ne pas fermer le diagnostic au lancement.
+foreach ($token in @('[switch]$ChildWindow',
+                      '$inputRedirected = [Console]::IsInputRedirected',
+                      "if (-not $ChildWindow -and",
+                      "Start-Process @start",
+                      '$start.Verb = ''RunAs''',
+                      '-ExecutionPolicy Bypass -STA -NoExit -File',
+                      "if ($ChildWindow) { exit 0 }")) {
+    if (-not $manualText.Contains($token)) { throw "Explorer bootstrap missing: $token" }
 }
-if ($manualText.IndexOf('Start-Process -FilePath $powerShellExe') -gt
+if ($manualText.Contains("if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected)")) {
+    throw 'Old redirected-input guard still blocks Explorer shell execution'
+}
+if ($manualText.IndexOf("Start-Process @start") -gt
     $manualText.IndexOf('function Invoke-StandaloneDriverEngine')) {
-    throw 'UAC elevation must occur before launching the driver engine'
+    throw 'UAC relaunch must be before driver engine initialization'
 }
-Write-Output 'PASS: UAC elevation, no extra launcher, guard against non-interactive use'
+Write-Output 'PASS: Explorer launch, UAC elevation, redirected input, persistent error console'
 
 if ($manualText.Contains('Invoke-Expression')) { throw 'Do not evaluate external scripts' }
 if (-not $manualText.Contains('Rechercher les pilotes disponibles') -or

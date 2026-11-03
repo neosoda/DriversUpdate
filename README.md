@@ -140,7 +140,9 @@ Vous pouvez aussi le lancer depuis une console PowerShell standard, sans l'ouvri
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\DriversUpdate-Manual.ps1
 ~~~
 
-Si les droits administrateur sont déjà présents, aucune deuxième fenêtre n'est lancée. Si l'UAC est refusée, le script s'arrête sans installer de pilote (code 101). **Pas besoin de lanceur .cmd ou d'un troisième fichier.** Un double-clic classique sur un .ps1 peut ouvrir l'éditeur selon les associations Windows : privilégiez le clic droit « Exécuter avec PowerShell ».
+Le script ouvre maintenant une **console dédiée et élevée** si nécessaire, y compris lorsque le lancement depuis l'Explorateur redirige l'entrée PowerShell. La fenêtre reste ouverte si une erreur apparaît au démarrage, afin que vous puissiez la lire ; elle se ferme normalement via **0 — Quitter**. Si l'UAC est refusée, rien n'est installé (code 101).
+
+Si « Exécuter avec PowerShell » n'ouvre toujours aucune fenêtre, lancez la commande ci-dessus dans une console déjà ouverte : **le message d'erreur restera visible** (par exemple une stratégie d'exécution GPO bloquante). **Aucun lanceur .cmd ni troisième fichier n'est nécessaire.**
 
 ~~~text
 ========================================================
