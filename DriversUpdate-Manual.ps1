@@ -65,7 +65,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $ScriptName = 'DriversUpdateManual'
-$ScriptVersion = '3.1.0'
+$ScriptVersion = '3.2.0'
 
 $ExitCodes = @{
     Success = 0
@@ -681,132 +681,187 @@ function Get-ManualDriverWarnings {
     return $warnings.ToArray()
 }
 
-function Write-ManualDriverChecklist {
-    param(
-        [Parameter(Mandatory = $true)]$Updates,
-        [int[]]$SelectedNumbers = @(),
-        [switch]$PreviewOnly
-    )
+# L'interface principale est une fenetre Windows Forms native.
+# Une saisie console simple reste disponible si l'environnement graphique
+# est indisponible ; les deux chemins installent directement apres la selection.
+function Read-ConsoleDriverChoice {
+    param([Parameter(Mandatory = $true)]$Updates)
+
+    $allowed = New-Object 'System.Collections.Generic.List[int]'
     Write-Host ''
-    if ($PreviewOnly) {
-        Write-Host '  PILOTES DÉTECTÉS - RECHERCHE SEULE' -ForegroundColor Cyan
-    } else {
-        Write-Host '  ÉTAPE 2/3 - COCHER LES PILOTES À INSTALLER' -ForegroundColor Cyan
-    }
-    Write-Host '  --------------------------------------------------------' -ForegroundColor DarkGray
-    $availableCount = 0
-    for ($index = 0; $index -lt $Updates.Count; $index++) {
-        $update = $Updates.Item($index)
-        $number = $index + 1
+    Write-Host '  CHOIX DES PILOTES' -ForegroundColor Cyan
+    for ($i = 0; $i -lt $Updates.Count; $i++) {
+        $update = $Updates.Item($i)
         $reason = Get-ManualDriverBlockReason -Update $update
-        if ($reason) {
-            Write-Host ("  [-] {0}. {1}" -f $number, $update.Title) -ForegroundColor DarkGray
-            Write-Host ("      Indisponible : {0}" -f (Get-DriverReasonFrench -Reason $reason)) -ForegroundColor DarkYellow
-            continue
-        }
-        $availableCount++
-        $checked = if ($number -in $SelectedNumbers) { 'x' } else { ' ' }
-        $color = if ($checked -eq 'x') { 'Green' } else { 'White' }
-        Write-Host ("  [{0}] {1}. {2}" -f $checked, $number, $update.Title) -ForegroundColor $color
-        $manufacturer = Get-ComPropertyValue -Object $update -Name 'DriverManufacturer'
-        $className = Get-ComPropertyValue -Object $update -Name 'DriverClass'
-        if ($manufacturer -or $className) {
-            Write-Host ("      {0} - {1}" -f $manufacturer, $className) -ForegroundColor DarkGray
-        }
-        foreach ($warning in @(Get-ManualDriverWarnings -Update $update)) {
-            Write-Host ("      ! {0}" -f $warning) -ForegroundColor Yellow
+        if ($null -ne $reason) { continue }
+        $number = $i + 1
+        $allowed.Add($number)
+        Write-Host ("  [{0}] {1}" -f $number, $update.Title)
+    }
+    if ($allowed.Count -eq 0) {
+        Write-Host '  Aucun pilote disponible.' -ForegroundColor Yellow
+        return [pscustomobject]@{ Cancelled = $true; SelectedIndices = @() }
+    }
+    Write-Host '  Indiquez les numéros à installer (ex : 1,3), T pour tous, 0 pour annuler.'
+    while ($true) {
+        $answer = Read-Host '  Pilotes à installer'
+        try {
+            $indices = @(ConvertTo-DriverSelection -InputText $answer -EligibleNumbers @($allowed.ToArray()) -MaxIndex $Updates.Count)
+            if ($indices.Count -eq 0) {
+                return [pscustomobject]@{ Cancelled = $true; SelectedIndices = @() }
+            }
+            return [pscustomobject]@{ Cancelled = $false; SelectedIndices = @($indices) }
+        } catch {
+            Write-Host ("  Sélection incorrecte : {0}" -f $_.Exception.Message) -ForegroundColor Yellow
         }
     }
-    Write-Host '  --------------------------------------------------------' -ForegroundColor DarkGray
-    Write-Host ("  Sélection : {0} / {1} pilote(s) disponible(s)." -f $SelectedNumbers.Count, $availableCount) -ForegroundColor Cyan
-    if ($PreviewOnly) {
-        Write-Host '  Recherche uniquement. Choisissez le menu 2 pour cocher des pilotes.' -ForegroundColor Gray
-    } else {
-        Write-Host '  Numéro = cocher/décocher | 1,3 = plusieurs | T = tout cocher' -ForegroundColor Gray
-        Write-Host '  A = tout décocher | V = vérifier et valider | 0 = annuler' -ForegroundColor Gray
+}
+
+function Show-DriverSelectionDialog {
+    param([Parameter(Mandatory = $true)]$Updates)
+
+    Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+    Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+    if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne [System.Threading.ApartmentState]::STA) {
+        throw 'Le sélecteur graphique nécessite PowerShell en mode STA.'
+    }
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = 'DriversUpdate - Choisir les pilotes'
+    $form.ClientSize = New-Object System.Drawing.Size(940, 535)
+    $form.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+    $form.MinimumSize = New-Object System.Drawing.Size(780, 470)
+    $form.AutoScaleMode = [System.Windows.Forms.AutoScaleMode]::Font
+    $form.Font = New-Object System.Drawing.Font('Segoe UI', 10)
+    $form.ShowInTaskbar = $true
+    $form.KeyPreview = $true
+
+    $title = New-Object System.Windows.Forms.Label
+    $title.Text = 'Sélectionnez les pilotes à installer'
+    $title.Location = New-Object System.Drawing.Point(18, 14)
+    $title.Size = New-Object System.Drawing.Size(900, 30)
+    $title.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 14, [System.Drawing.FontStyle]::Bold)
+    $title.Anchor = 'Top,Left,Right'
+    [void]$form.Controls.Add($title)
+
+    $subtitle = New-Object System.Windows.Forms.Label
+    $subtitle.Text = 'Cochez les pilotes de votre choix, puis cliquez sur Installer.'
+    $subtitle.Location = New-Object System.Drawing.Point(19, 48)
+    $subtitle.Size = New-Object System.Drawing.Size(895, 25)
+    $subtitle.ForeColor = [System.Drawing.Color]::DimGray
+    $subtitle.Anchor = 'Top,Left,Right'
+    [void]$form.Controls.Add($subtitle)
+
+    $checklist = New-Object System.Windows.Forms.CheckedListBox
+    $checklist.Location = New-Object System.Drawing.Point(18, 82)
+    $checklist.Size = New-Object System.Drawing.Size(902, 318)
+    $checklist.Anchor = 'Top,Bottom,Left,Right'
+    $checklist.CheckOnClick = $true
+    $checklist.IntegralHeight = $false
+    $checklist.HorizontalScrollbar = $true
+    $checklist.HorizontalExtent = 1500
+    $checklist.TabIndex = 0
+    [void]$form.Controls.Add($checklist)
+
+    # L'index de chaque element WinForms renvoie l'index WUA d'origine.
+    $originalIndices = New-Object 'System.Collections.Generic.List[int]'
+    for ($i = 0; $i -lt $Updates.Count; $i++) {
+        $update = $Updates.Item($i)
+        if ($null -ne (Get-ManualDriverBlockReason -Update $update)) { continue }
+        $className = [string](Get-ComPropertyValue -Object $update -Name 'DriverClass')
+        $label = [string]$update.Title
+        if ($className) { $label += "  [$className]" }
+        [void]$checklist.Items.Add($label)
+        $originalIndices.Add($i + 1)
+    }
+    if ($originalIndices.Count -eq 0) {
+        $form.Dispose()
+        Write-Host '  Aucun pilote disponible.' -ForegroundColor Yellow
+        return [pscustomobject]@{ Cancelled = $true; SelectedIndices = @() }
+    }
+
+    $info = New-Object System.Windows.Forms.Label
+    $info.Text = 'Certains pilotes peuvent interrompre le réseau ou nécessiter un redémarrage. Aucun redémarrage automatique.'
+    $info.Location = New-Object System.Drawing.Point(19, 412)
+    $info.Size = New-Object System.Drawing.Size(894, 38)
+    $info.ForeColor = [System.Drawing.Color]::DimGray
+    $info.Anchor = 'Bottom,Left,Right'
+    [void]$form.Controls.Add($info)
+
+    $all = New-Object System.Windows.Forms.Button
+    $all.Text = 'Tout cocher'
+    $all.Location = New-Object System.Drawing.Point(18, 469)
+    $all.Size = New-Object System.Drawing.Size(130, 38)
+    $all.Anchor = 'Bottom,Left'
+    $all.Add_Click({
+        for ($i = 0; $i -lt $checklist.Items.Count; $i++) { $checklist.SetItemChecked($i, $true) }
+    }.GetNewClosure())
+    [void]$form.Controls.Add($all)
+
+    $none = New-Object System.Windows.Forms.Button
+    $none.Text = 'Tout décocher'
+    $none.Location = New-Object System.Drawing.Point(158, 469)
+    $none.Size = New-Object System.Drawing.Size(140, 38)
+    $none.Anchor = 'Bottom,Left'
+    $none.Add_Click({
+        for ($i = 0; $i -lt $checklist.Items.Count; $i++) { $checklist.SetItemChecked($i, $false) }
+    }.GetNewClosure())
+    [void]$form.Controls.Add($none)
+
+    $cancel = New-Object System.Windows.Forms.Button
+    $cancel.Text = 'Annuler'
+    $cancel.Location = New-Object System.Drawing.Point(645, 469)
+    $cancel.Size = New-Object System.Drawing.Size(120, 38)
+    $cancel.Anchor = 'Bottom,Right'
+    $cancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+    $form.CancelButton = $cancel
+    [void]$form.Controls.Add($cancel)
+
+    $install = New-Object System.Windows.Forms.Button
+    $install.Text = 'Installer la sélection'
+    $install.Location = New-Object System.Drawing.Point(775, 469)
+    $install.Size = New-Object System.Drawing.Size(145, 38)
+    $install.Anchor = 'Bottom,Right'
+    $install.Add_Click({
+        if ($checklist.CheckedIndices.Count -eq 0) {
+            [System.Windows.Forms.MessageBox]::Show(
+                'Cochez au moins un pilote à installer.', 'DriversUpdate',
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Information
+            ) | Out-Null
+            return
+        }
+        $form.DialogResult = [System.Windows.Forms.DialogResult]::OK
+        $form.Close()
+    }.GetNewClosure())
+    [void]$form.Controls.Add($install)
+    $form.AcceptButton = $install
+
+    try {
+        $result = $form.ShowDialog()
+        if ($result -ne [System.Windows.Forms.DialogResult]::OK) {
+            return [pscustomobject]@{ Cancelled = $true; SelectedIndices = @() }
+        }
+        $selected = New-Object 'System.Collections.Generic.List[int]'
+        foreach ($checkedIndex in $checklist.CheckedIndices) {
+            $selected.Add($originalIndices[[int]$checkedIndex])
+        }
+        return [pscustomobject]@{ Cancelled = $false; SelectedIndices = @($selected.ToArray()) }
+    } finally {
+        $form.Dispose()
     }
 }
 
 function Read-InteractiveDriverChoice {
     param([Parameter(Mandatory = $true)]$Updates)
 
-    $allowed = New-Object 'System.Collections.Generic.List[int]'
-    for ($index = 0; $index -lt $Updates.Count; $index++) {
-        if ($null -eq (Get-ManualDriverBlockReason -Update $Updates.Item($index))) {
-            $allowed.Add(($index + 1))
-        }
-    }
-    if ($allowed.Count -eq 0) {
-        Write-Host '  Aucun pilote disponible pour une sélection manuelle.' -ForegroundColor Yellow
-        return [pscustomobject]@{ Cancelled = $true; SelectedIndices = @() }
-    }
-
-    $checked = New-Object 'System.Collections.Generic.HashSet[int]'
-    while ($true) {
-        $current = @($checked | Sort-Object)
-        Write-ManualDriverChecklist -Updates $Updates -SelectedNumbers $current
-        $answer = (Read-Host '  Votre choix').Trim()
-
-        if ($answer -eq '0') {
-            Write-Host '  Installation annulée : aucun téléchargement effectué.' -ForegroundColor Yellow
-            return [pscustomobject]@{ Cancelled = $true; SelectedIndices = @() }
-        }
-        if ($answer -match '^(?i:a)$') {
-            $checked.Clear()
-            continue
-        }
-        if ($answer -match '^(?i:t|tous)$') {
-            $checked.Clear()
-            foreach ($number in $allowed) { [void]$checked.Add($number) }
-            continue
-        }
-        if ($answer -match '^(?i:v|valider)$') {
-            if ($checked.Count -eq 0) {
-                Write-Host '  Cochez au moins un pilote avant de valider.' -ForegroundColor Yellow
-                continue
-            }
-            $selected = @($checked | Sort-Object)
-            Write-Host ''
-            Write-Host '  ÉTAPE 3/3 - VÉRIFIER AVANT INSTALLATION' -ForegroundColor Cyan
-            $sensitive = $false
-            foreach ($number in $selected) {
-                $update = $Updates.Item($number - 1)
-                Write-Host ("  [x] {0}" -f $update.Title) -ForegroundColor White
-                if (Test-ManualDriverIsSensitive -Update $update) { $sensitive = $true }
-            }
-            Write-Host ("  Total : {0} pilote(s) sélectionné(s)." -f $selected.Count) -ForegroundColor Cyan
-            Write-Host '  Des pilotes peuvent demander une interaction et provoquer un redémarrage.' -ForegroundColor Yellow
-            Write-Host '  Aucun redémarrage automatique ne sera déclenché.' -ForegroundColor Yellow
-
-            if ($sensitive) {
-                Write-Host '  ATTENTION : un pilote sensible a été coché (réseau, firmware ou stockage).' -ForegroundColor Red
-                $riskConfirmation = Read-Host '  Tapez RISQUES pour accepter explicitement ce risque'
-                if ($riskConfirmation -cne 'RISQUES') {
-                    Write-Host '  Validation des risques refusée. Retour à la sélection.' -ForegroundColor Yellow
-                    continue
-                }
-            }
-            $confirmation = Read-Host '  Tapez INSTALLER pour lancer les pilotes cochés (autre réponse = annuler)'
-            if ($confirmation -cne 'INSTALLER') {
-                Write-Host '  Installation annulée. Aucun pilote téléchargé.' -ForegroundColor Yellow
-                return [pscustomobject]@{ Cancelled = $true; SelectedIndices = @() }
-            }
-            return [pscustomobject]@{ Cancelled = $false; SelectedIndices = @($selected) }
-        }
-
-        if ($answer -eq '?') { continue }
-        try {
-            $numbers = @(ConvertTo-DriverSelection -InputText $answer -EligibleNumbers @($allowed.ToArray()) -MaxIndex $Updates.Count)
-            if ($numbers.Count -eq 0) {
-                Write-Host '  Entrez un numéro, T, V ou 0.' -ForegroundColor Yellow
-                continue
-            }
-            foreach ($number in $numbers) {
-                if (-not $checked.Add([int]$number)) { [void]$checked.Remove([int]$number) }
-            }
-        } catch {
-            Write-Host ("  Choix incorrect : {0}" -f $_.Exception.Message) -ForegroundColor Yellow
-        }
+    # Si Windows Forms n'est pas utilisable (session console distante, etc.),
+    # conserver la possibilité de choisir sans second fichier.
+    try {
+        return Show-DriverSelectionDialog -Updates $Updates
+    } catch {
+        Write-Host ("  Interface graphique indisponible : {0}" -f $_.Exception.Message) -ForegroundColor Yellow
+        return Read-ConsoleDriverChoice -Updates $Updates
     }
 }
 
@@ -1041,7 +1096,7 @@ function Invoke-DriverUpdateDeployment {
 
             $criteria = "IsInstalled=0 and IsHidden=0 and Type='Driver'"
             if ($UserFacing) {
-                Write-Host '  ÉTAPE 1/3 - RECHERCHE WINDOWS UPDATE' -ForegroundColor Cyan
+                Write-Host '  RECHERCHE DES PILOTES WINDOWS UPDATE' -ForegroundColor Cyan
                 Write-Host '  Recherche des pilotes en cours...'
                 Write-Host "  Cette étape peut prendre quelques minutes." -ForegroundColor DarkGray
             }
@@ -1121,7 +1176,7 @@ function Invoke-DriverUpdateDeployment {
         }
 
         if ($installCandidates.Count -eq 0) {
-            if ($UserFacing) { Write-Host "  Aucun pilote autorisé n'a été retenu." -ForegroundColor Yellow }
+            if ($UserFacing) { Write-Host "  Aucun pilote sélectionné n'a pu être installé." -ForegroundColor Yellow }
             Write-Log -Level 'WARN' -Message 'No silent install candidate remains after filtering.'
             Save-State -ExitCode $ExitCodes.Success -Outcome 'NoEligibleCandidates' -UpdatesFound $updatesFound
             return $ExitCodes.Success
@@ -1459,10 +1514,10 @@ function Invoke-ManualDriverUpdate {
     } else {
         Write-Host '  INSTALLATION MANUELLE' -ForegroundColor Cyan
         Write-Host '  1. Recherche des pilotes disponibles'
-        Write-Host '  2. Cases à cocher, y compris les pilotes nécessitant une intervention'
-        Write-Host "  3. Validation explicite avant installation"
+        Write-Host '  2. Sélection dans une fenêtre à cases à cocher'
+        Write-Host "  3. Installation des pilotes sélectionnés"
         Write-Host ''
-        Write-Host '  Aucune modification avant votre confirmation. Les pilotes sensibles sont signalés.' -ForegroundColor Yellow
+        Write-Host '  L'installation démarre après votre clic sur Installer.' -ForegroundColor Yellow
     }
     Write-Host ''
     try {
@@ -1513,7 +1568,7 @@ function Show-MainMenu {
     Write-Host '      Consulter uniquement, sans rien installer.' -ForegroundColor DarkGray
     Write-Host ''
     Write-Host '  [2] Cocher les pilotes à installer' -ForegroundColor White
-    Write-Host '      Cases [ ]/[x], validation et avertissements pour les pilotes sensibles.' -ForegroundColor DarkGray
+    Write-Host '      Fenêtre avec cases à cocher et bouton Installer.' -ForegroundColor DarkGray
     Write-Host ''
     Write-Host '  [3] Afficher le dernier bilan'
     Write-Host '  [4] Consulter le journal technique'
