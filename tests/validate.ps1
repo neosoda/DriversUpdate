@@ -42,6 +42,14 @@ foreach ($name in @('Invoke-ManualDriverUpdate', 'Invoke-StandaloneDriverEngine'
 
 $gpoText = Get-Content -LiteralPath $gpo -Raw -Encoding UTF8
 $manualText = Get-Content -LiteralPath $manual -Raw -Encoding UTF8
+# Régression : une apostrophe non échappée dans une chaîne PowerShell avait
+# cassé l'analyse syntaxique du fichier (erreur de terminateur vers la fin).
+# Read-Functions effectue déjà un ParseFile complet de chaque PS1 ci-dessus.
+if ($manualText.Contains("Write-Host '  L'installation démarre")) {
+    throw 'Unescaped apostrophe in manual script startup message'
+}
+Write-Output 'PASS: PowerShell parser and startup message quoting'
+
 foreach ($src in @($gpoText, $manualText)) {
     foreach ($key in @('$ProxyEnabled', '$ProxyHost', '$ProxyPort', '$ProxyUser', '$ProxyPassword', '$ProxyAuthScheme')) {
         if (-not $src.Contains($key)) { throw "Missing inline configuration: $key" }
