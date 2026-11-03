@@ -653,34 +653,6 @@ function Get-ManualDriverBlockReason {
     return $null
 }
 
-function Test-ManualDriverIsSensitive {
-    param([Parameter(Mandatory = $true)]$Update)
-    $title = [string]$Update.Title
-    $class = [string](Get-ComPropertyValue -Object $Update -Name 'DriverClass')
-    return ($class -match '(?i)^(Net|Networking|SCSIAdapter|HDC|DiskDrive|Firmware)$' -or
-            $title -match '(?i)(^|[^a-z])(firmware|bios|uefi|network|networking|ethernet|wi-fi|wifi|net driver)([^a-z]|$)')
-}
-
-function Get-ManualDriverWarnings {
-    param([Parameter(Mandatory = $true)]$Update)
-    $warnings = New-Object 'System.Collections.Generic.List[string]'
-    try {
-        if ([bool]$Update.InstallationBehavior.CanRequestUserInput) {
-            $warnings.Add('Le pilote peut demander une intervention pendant son installation.')
-        }
-    } catch {
-        $warnings.Add('Comportement interactif non déterminé.')
-    }
-    $automaticExclusion = Get-DriverExclusionReason -Update $Update
-    if ($null -ne $automaticExclusion) {
-        $warnings.Add(("Exclu du mode GPO : {0}" -f (Get-DriverReasonFrench -Reason $automaticExclusion)))
-    }
-    if (Test-ManualDriverIsSensitive -Update $Update) {
-        $warnings.Add('PILOTE SENSIBLE (réseau / firmware / stockage) : risque de coupure ou redémarrage.')
-    }
-    return $warnings.ToArray()
-}
-
 # L'interface principale est une fenetre Windows Forms native.
 # Une saisie console simple reste disponible si l'environnement graphique
 # est indisponible ; les deux chemins installent directement apres la selection.
@@ -1123,8 +1095,13 @@ function Invoke-DriverUpdateDeployment {
         }
 
         if ($UserFacing -and ($ScanOnly -or $DryRun)) {
-            Write-ManualDriverChecklist -Updates $updates -SelectedNumbers @() -PreviewOnly
-            Write-Host "  Recherche terminée : aucun téléchargement, aucune installation." -ForegroundColor Green
+            Write-Host ''
+            Write-Host '  PILOTES DÉTECTÉS' -ForegroundColor Cyan
+            for ($index = 0; $index -lt $updates.Count; $index++) {
+                Write-Host ("  {0}. {1}" -f ($index + 1), $updates.Item($index).Title)
+            }
+            Write-Host '  Recherche terminée : aucun téléchargement, aucune installation.' -ForegroundColor Green
+            Write-Host '  Utilisez le menu 2 pour choisir les pilotes à installer.' -ForegroundColor Gray
         }
         $interactiveSelectedIndices = $null
         if ($Interactive) {
