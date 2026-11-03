@@ -325,8 +325,8 @@ function Protect-DriverProxyBackupDirectory {
     }
     $inherit = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
     foreach ($sidText in @('S-1-5-18', 'S-1-5-32-544')) {
-        $sid = New-Object Security.Principal.SecurityIdentifier($sidText)
-        $rule = New-Object Security.AccessControl.FileSystemAccessRule(
+        $sid = [Security.Principal.SecurityIdentifier]::new($sidText)
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new(
             $sid,
             [Security.AccessControl.FileSystemRights]::FullControl,
             $inherit,
