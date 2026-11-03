@@ -830,10 +830,10 @@ function Read-InteractiveDriverChoice {
     # Si Windows Forms n'est pas utilisable (session console distante, etc.),
     # conserver la possibilité de choisir sans second fichier.
     try {
-        return Show-DriverSelectionDialog -Updates $Updates
+        return (Show-DriverSelectionDialog -Updates $Updates)
     } catch {
         Write-Host ("  Interface graphique indisponible : {0}" -f $_.Exception.Message) -ForegroundColor Yellow
-        return Read-ConsoleDriverChoice -Updates $Updates
+        return (Read-ConsoleDriverChoice -Updates $Updates)
     }
 }
 
