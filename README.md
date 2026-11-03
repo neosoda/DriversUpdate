@@ -128,11 +128,19 @@ Le moteur limite par défaut les déploiements automatiques répétés à **un s
 
 ## 🛠️ Exécution manuelle
 
-Téléchargez seulement **[DriversUpdate-Manual.ps1](DriversUpdate-Manual.ps1)**, puis ouvrez **Windows PowerShell en administrateur** :
+Téléchargez uniquement **[DriversUpdate-Manual.ps1](DriversUpdate-Manual.ps1)**. Pour le lancer simplement :
+
+1. **Clic droit sur le PS1 → Exécuter avec PowerShell** (sur Windows 11, éventuellement **Afficher plus d'options**).
+2. Acceptez la demande **UAC** de Windows.
+3. Le menu s'ouvre automatiquement **en administrateur**.
+
+Vous pouvez aussi le lancer depuis une console PowerShell standard, sans l'ouvrir préalablement en administrateur :
 
 ~~~powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\DriversUpdate-Manual.ps1
 ~~~
+
+Si les droits administrateur sont déjà présents, aucune deuxième fenêtre n'est lancée. Si l'UAC est refusée, le script s'arrête sans installer de pilote (code 101). **Pas besoin de lanceur .cmd ou d'un troisième fichier.** Un double-clic classique sur un .ps1 peut ouvrir l'éditeur selon les associations Windows : privilégiez le clic droit « Exécuter avec PowerShell ».
 
 ~~~text
 ========================================================
