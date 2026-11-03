@@ -1520,7 +1520,7 @@ function Invoke-ManualDriverUpdate {
         Write-Host '  2. Sélection dans une fenêtre à cases à cocher'
         Write-Host "  3. Installation des pilotes sélectionnés"
         Write-Host ''
-        Write-Host '  L'installation démarre après votre clic sur Installer.' -ForegroundColor Yellow
+        Write-Host "  L'installation démarre après votre clic sur Installer." -ForegroundColor Yellow
     }
     Write-Host ''
     try {
