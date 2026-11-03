@@ -43,8 +43,10 @@ $script:ScanSucceeded = $false
 $script:DriverResults = New-Object System.Collections.ArrayList
 $script:Configuration = $null
 $script:UpdateSource = 'Default'
-$script:ProxyBackupPath = Join-Path -Path $StateRoot -ChildPath 'winhttp-before-driversupdate.txt'
-$script:ProxyRegistryBackupPath = Join-Path -Path $StateRoot -ChildPath 'winhttp-registry-before-driversupdate.json'
+$script:ProxyBackupRoot = Join-Path -Path $StateRoot -ChildPath 'proxy'
+$script:ProxyBackupPath = Join-Path -Path $script:ProxyBackupRoot -ChildPath 'winhttp-before-driversupdate.txt'
+$script:ProxyRegistryBackupPath = Join-Path -Path $script:ProxyBackupRoot -ChildPath 'winhttp-registry-before-driversupdate.json'
+$script:ProxyRecoveryReady = $false
 
 function Initialize-LocalPath {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -312,6 +314,31 @@ function Get-DriverConfiguration {
 
 # Le mode System utilise WinHTTP deja configure sur l'ordinateur.
 # Le mode Temporary remplace WinHTTP le temps du traitement et restaure son etat.
+function Protect-DriverProxyBackupDirectory {
+    # netsh exec lit un script. Seuls SYSTEM et les administrateurs doivent
+    # pouvoir modifier une sauvegarde executee avec des privileges eleves.
+    Initialize-LocalPath -Path $script:ProxyBackupRoot
+    $acl = Get-Acl -LiteralPath $script:ProxyBackupRoot -ErrorAction Stop
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($existing in @($acl.Access)) {
+        [void]$acl.RemoveAccessRuleSpecific($existing)
+    }
+    $inherit = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    foreach ($sidText in @('S-1-5-18', 'S-1-5-32-544')) {
+        $sid = New-Object Security.Principal.SecurityIdentifier($sidText)
+        $rule = New-Object Security.AccessControl.FileSystemAccessRule(
+            $sid,
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            $inherit,
+            [Security.AccessControl.PropagationFlags]::None,
+            [Security.AccessControl.AccessControlType]::Allow
+        )
+        $acl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $script:ProxyBackupRoot -AclObject $acl -ErrorAction Stop
+    $script:ProxyRecoveryReady = $true
+}
+
 function Invoke-DriversNetsh {
     param([Parameter(Mandatory = $true)][string[]]$Arguments)
     $output = @(& netsh.exe @Arguments 2>&1)
@@ -811,7 +838,7 @@ function Invoke-DriverUpdateDeployment {
         try { $script:Configuration = Get-DriverConfiguration }
         catch { Write-Log -Level 'ERROR' -Message "Invalid configuration: $($_.Exception.Message)"; Save-State -ExitCode $ExitCodes.PrerequisiteFailed -Outcome 'InvalidConfig'; return $ExitCodes.PrerequisiteFailed }
         # Recuperer une sauvegarde WinHTTP laissee par une interruption brutale.
-        try { Restore-DriverProxy }
+        try { Protect-DriverProxyBackupDirectory; Restore-DriverProxy }
         catch {
             Save-State -ExitCode $ExitCodes.PrerequisiteFailed -Outcome 'ProxyRestoreFailed'
             return $ExitCodes.PrerequisiteFailed
@@ -1111,7 +1138,7 @@ try {
 } finally {
     # Restaurer meme si recherche/telechargement/installation a echoue.
     # Ne jamais modifier l'etat du proxy lorsqu'un autre lancement detient le mutex.
-    if ($lockAcquired) {
+    if ($lockAcquired -and $script:ProxyRecoveryReady) {
         try { Restore-DriverProxy }
         catch {
             Write-Output "DriversUpdate proxy restoration failed: $($_.Exception.Message)"
