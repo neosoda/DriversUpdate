@@ -834,15 +834,15 @@ function Invoke-DriverUpdateDeployment {
         }
 
         Write-WindowsUpdatePolicySummary
-        if ($TemporaryMicrosoftUpdateService) { Write-Log -Level 'WARN' -Message 'Deprecated switch ignored: V2 does not register Microsoft Update.' }
-        try { $script:Configuration = Get-DriverConfiguration }
-        catch { Write-Log -Level 'ERROR' -Message "Invalid configuration: $($_.Exception.Message)"; Save-State -ExitCode $ExitCodes.PrerequisiteFailed -Outcome 'InvalidConfig'; return $ExitCodes.PrerequisiteFailed }
-        # Recuperer une sauvegarde WinHTTP laissee par une interruption brutale.
+        # Restaurer d'abord WinHTTP, meme si la configuration a ete supprimee ou corrompue.
         try { Protect-DriverProxyBackupDirectory; Restore-DriverProxy }
         catch {
             Save-State -ExitCode $ExitCodes.PrerequisiteFailed -Outcome 'ProxyRestoreFailed'
             return $ExitCodes.PrerequisiteFailed
         }
+        if ($TemporaryMicrosoftUpdateService) { Write-Log -Level 'WARN' -Message 'Deprecated switch ignored: V2 does not register Microsoft Update.' }
+        try { $script:Configuration = Get-DriverConfiguration }
+        catch { Write-Log -Level 'ERROR' -Message "Invalid configuration: $($_.Exception.Message)"; Save-State -ExitCode $ExitCodes.PrerequisiteFailed -Outcome 'InvalidConfig'; return $ExitCodes.PrerequisiteFailed }
         $wuPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate'
         $auPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU'
         if ((Get-RegistryValueOrNull -Path $wuPath -Name 'ExcludeWUDriversInQualityUpdate') -eq 1 -or
