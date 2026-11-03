@@ -65,7 +65,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $ScriptName = 'DriversUpdateManual'
-$ScriptVersion = '3.0.0'
+$ScriptVersion = '3.1.0'
 
 $ExitCodes = @{
     Success = 0
@@ -641,55 +641,163 @@ function Write-DriverOverview {
     return [pscustomobject]@{ EligibleNumbers = @($eligible.ToArray()) }
 }
 
+# Le mode manuel permet l'installation volontaire de pilotes exclus du mode
+# silencieux GPO, apres affichage des risques et confirmation explicite.
+function Get-ManualDriverBlockReason {
+    param([Parameter(Mandatory = $true)]$Update)
+    if (-not $AcceptEula) {
+        try {
+            if (-not [bool]$Update.EulaAccepted) { return 'EulaNotAccepted' }
+        } catch { return 'EulaUnknown' }
+    }
+    return $null
+}
+
+function Test-ManualDriverIsSensitive {
+    param([Parameter(Mandatory = $true)]$Update)
+    $title = [string]$Update.Title
+    $class = [string](Get-ComPropertyValue -Object $Update -Name 'DriverClass')
+    return ($class -match '(?i)^(Net|Networking|SCSIAdapter|HDC|DiskDrive|Firmware)$' -or
+            $title -match '(?i)(^|[^a-z])(firmware|bios|uefi|network|networking|ethernet|wi-fi|wifi|net driver)([^a-z]|$)')
+}
+
+function Get-ManualDriverWarnings {
+    param([Parameter(Mandatory = $true)]$Update)
+    $warnings = New-Object 'System.Collections.Generic.List[string]'
+    try {
+        if ([bool]$Update.InstallationBehavior.CanRequestUserInput) {
+            $warnings.Add('Le pilote peut demander une intervention pendant son installation.')
+        }
+    } catch {
+        $warnings.Add('Comportement interactif non déterminé.')
+    }
+    $automaticExclusion = Get-DriverExclusionReason -Update $Update
+    if ($null -ne $automaticExclusion) {
+        $warnings.Add(("Exclu du mode GPO : {0}" -f (Get-DriverReasonFrench -Reason $automaticExclusion)))
+    }
+    if (Test-ManualDriverIsSensitive -Update $Update) {
+        $warnings.Add('PILOTE SENSIBLE (réseau / firmware / stockage) : risque de coupure ou redémarrage.')
+    }
+    return $warnings.ToArray()
+}
+
+function Write-ManualDriverChecklist {
+    param(
+        [Parameter(Mandatory = $true)]$Updates,
+        [int[]]$SelectedNumbers = @()
+    )
+    Write-Host ''
+    Write-Host '  ÉTAPE 2/3 - COCHER LES PILOTES À INSTALLER' -ForegroundColor Cyan
+    Write-Host '  --------------------------------------------------------' -ForegroundColor DarkGray
+    $availableCount = 0
+    for ($index = 0; $index -lt $Updates.Count; $index++) {
+        $update = $Updates.Item($index)
+        $number = $index + 1
+        $reason = Get-ManualDriverBlockReason -Update $update
+        if ($reason) {
+            Write-Host ("  [-] {0}. {1}" -f $number, $update.Title) -ForegroundColor DarkGray
+            Write-Host ("      Indisponible : {0}" -f (Get-DriverReasonFrench -Reason $reason)) -ForegroundColor DarkYellow
+            continue
+        }
+        $availableCount++
+        $checked = if ($number -in $SelectedNumbers) { 'x' } else { ' ' }
+        $color = if ($checked -eq 'x') { 'Green' } else { 'White' }
+        Write-Host ("  [{0}] {1}. {2}" -f $checked, $number, $update.Title) -ForegroundColor $color
+        $manufacturer = Get-ComPropertyValue -Object $update -Name 'DriverManufacturer'
+        $className = Get-ComPropertyValue -Object $update -Name 'DriverClass'
+        if ($manufacturer -or $className) {
+            Write-Host ("      {0} - {1}" -f $manufacturer, $className) -ForegroundColor DarkGray
+        }
+        foreach ($warning in @(Get-ManualDriverWarnings -Update $update)) {
+            Write-Host ("      ! {0}" -f $warning) -ForegroundColor Yellow
+        }
+    }
+    Write-Host '  --------------------------------------------------------' -ForegroundColor DarkGray
+    Write-Host ("  Sélection : {0} / {1} pilote(s) disponible(s)." -f $SelectedNumbers.Count, $availableCount) -ForegroundColor Cyan
+    Write-Host '  Numéro = cocher/décocher | 1,3 = plusieurs | T = tout cocher' -ForegroundColor Gray
+    Write-Host '  A = tout décocher | V = vérifier et valider | 0 = annuler' -ForegroundColor Gray
+}
+
 function Read-InteractiveDriverChoice {
     param([Parameter(Mandatory = $true)]$Updates)
 
-    $overview = Write-DriverOverview -Updates $Updates
-    $eligible = @($overview.EligibleNumbers)
-    if ($eligible.Count -eq 0) {
-        Write-Host "  Aucun pilote ne peut être installé avec les filtres actuels." -ForegroundColor Yellow
+    $allowed = New-Object 'System.Collections.Generic.List[int]'
+    for ($index = 0; $index -lt $Updates.Count; $index++) {
+        if ($null -eq (Get-ManualDriverBlockReason -Update $Updates.Item($index))) {
+            $allowed.Add(($index + 1))
+        }
+    }
+    if ($allowed.Count -eq 0) {
+        Write-Host '  Aucun pilote disponible pour une sélection manuelle.' -ForegroundColor Yellow
         return [pscustomobject]@{ Cancelled = $true; SelectedIndices = @() }
     }
 
-    Write-Host ''
-    Write-Host '  ÉTAPE 2/3 - CHOIX DES PILOTES' -ForegroundColor Cyan
-    Write-Host '  Saisissez uniquement les numéros autorisés.'
-    Write-Host '  Exemples : 1,3 (deux pilotes) | 1-3 (plage de pilotes)'
-    Write-Host '  T = tous les pilotes autorisés | 0 = annuler'
+    $checked = New-Object 'System.Collections.Generic.HashSet[int]'
     while ($true) {
-        $answer = Read-Host '  Numéros à installer'
-        if ($answer.Trim() -eq '?') {
-            Write-Host '  Exemple de saisie : 1,3-5 ; les pilotes exclus ne peuvent pas être choisis.' -ForegroundColor DarkCyan
-            continue
-        }
-        try {
-            $selected = @(ConvertTo-DriverSelection -InputText $answer -EligibleNumbers $eligible -MaxIndex $Updates.Count)
-        } catch {
-            Write-Host ("  Choix refusé : {0}" -f $_.Exception.Message) -ForegroundColor Yellow
-            Write-Host '  Corrigez la saisie, ou tapez 0 pour annuler.'
-            continue
-        }
-        if ($selected.Count -eq 0) {
+        $current = @($checked | Sort-Object)
+        Write-ManualDriverChecklist -Updates $Updates -SelectedNumbers $current
+        $answer = (Read-Host '  Votre choix').Trim()
+
+        if ($answer -eq '0') {
             Write-Host '  Installation annulée : aucun téléchargement effectué.' -ForegroundColor Yellow
             return [pscustomobject]@{ Cancelled = $true; SelectedIndices = @() }
         }
+        if ($answer -match '^(?i:a)$') {
+            $checked.Clear()
+            continue
+        }
+        if ($answer -match '^(?i:t|tous)$') {
+            $checked.Clear()
+            foreach ($number in $allowed) { [void]$checked.Add($number) }
+            continue
+        }
+        if ($answer -match '^(?i:v|valider)$') {
+            if ($checked.Count -eq 0) {
+                Write-Host '  Cochez au moins un pilote avant de valider.' -ForegroundColor Yellow
+                continue
+            }
+            $selected = @($checked | Sort-Object)
+            Write-Host ''
+            Write-Host '  ÉTAPE 3/3 - VÉRIFIER AVANT INSTALLATION' -ForegroundColor Cyan
+            $sensitive = $false
+            foreach ($number in $selected) {
+                $update = $Updates.Item($number - 1)
+                Write-Host ("  [x] {0}" -f $update.Title) -ForegroundColor White
+                if (Test-ManualDriverIsSensitive -Update $update) { $sensitive = $true }
+            }
+            Write-Host ("  Total : {0} pilote(s) sélectionné(s)." -f $selected.Count) -ForegroundColor Cyan
+            Write-Host '  Des pilotes peuvent demander une interaction et provoquer un redémarrage.' -ForegroundColor Yellow
+            Write-Host '  Aucun redémarrage automatique ne sera déclenché.' -ForegroundColor Yellow
 
-        Write-Host ''
-        Write-Host '  ÉTAPE 3/3 - VÉRIFICATION AVANT INSTALLATION' -ForegroundColor Cyan
-        foreach ($number in $selected) {
-            Write-Host ("   - {0}" -f $Updates.Item($number - 1).Title)
+            if ($sensitive) {
+                Write-Host '  ATTENTION : un pilote sensible a été coché (réseau, firmware ou stockage).' -ForegroundColor Red
+                $riskConfirmation = Read-Host '  Tapez RISQUES pour accepter explicitement ce risque'
+                if ($riskConfirmation -cne 'RISQUES') {
+                    Write-Host '  Validation des risques refusée. Retour à la sélection.' -ForegroundColor Yellow
+                    continue
+                }
+            }
+            $confirmation = Read-Host '  Tapez INSTALLER pour lancer les pilotes cochés (autre réponse = annuler)'
+            if ($confirmation -cne 'INSTALLER') {
+                Write-Host '  Installation annulée. Aucun pilote téléchargé.' -ForegroundColor Yellow
+                return [pscustomobject]@{ Cancelled = $true; SelectedIndices = @() }
+            }
+            return [pscustomobject]@{ Cancelled = $false; SelectedIndices = @($selected) }
         }
-        Write-Host ("  Total : {0} pilote(s) sélectionné(s)." -f $selected.Count)
-        Write-Host "  L'installation peut nécessiter un redémarrage de Windows." -ForegroundColor Yellow
-        Write-Host '  Aucun redémarrage automatique ne sera déclenché.'
-        Write-Host ''
-        $confirmation = Read-Host '  Tapez INSTALLER pour confirmer (autre réponse = annuler)'
-        if ($confirmation -cne 'INSTALLER') {
-            Write-Host '  Installation annulée. Aucun pilote téléchargé.' -ForegroundColor Yellow
-            return [pscustomobject]@{ Cancelled = $true; SelectedIndices = @() }
+
+        if ($answer -eq '?') { continue }
+        try {
+            $numbers = @(ConvertTo-DriverSelection -InputText $answer -EligibleNumbers @($allowed.ToArray()) -MaxIndex $Updates.Count)
+            if ($numbers.Count -eq 0) {
+                Write-Host '  Entrez un numéro, T, V ou 0.' -ForegroundColor Yellow
+                continue
+            }
+            foreach ($number in $numbers) {
+                if (-not $checked.Add([int]$number)) { [void]$checked.Remove([int]$number) }
+            }
+        } catch {
+            Write-Host ("  Choix incorrect : {0}" -f $_.Exception.Message) -ForegroundColor Yellow
         }
-        Write-Host '  Confirmation reçue.' -ForegroundColor Green
-        return [pscustomobject]@{ Cancelled = $false; SelectedIndices = @($selected) }
     }
 }
 
@@ -970,14 +1078,19 @@ function Invoke-DriverUpdateDeployment {
             $update = $updates.Item($index)
             Write-Log -Message "Candidate update: $(Get-UpdateSummary -Update $update)"
 
-            $exclusion = Get-DriverEligibilityReason -Update $update
+            # Le choix manuel explicite prime sur le filtre silencieux GPO.
+            if ($Interactive) {
+                if (($index + 1) -notin $interactiveSelectedIndices) {
+                    Add-DriverResult -Update $update -Status 'Skipped' -Detail 'NotSelected'
+                    continue
+                }
+                $exclusion = Get-ManualDriverBlockReason -Update $update
+            } else {
+                $exclusion = Get-DriverEligibilityReason -Update $update
+            }
             if ($null -ne $exclusion) {
                 Write-Log -Message "Skipping driver: $($update.Title) ($exclusion)"
                 Add-DriverResult -Update $update -Status 'Skipped' -Detail $exclusion
-                continue
-            }
-            if ($null -ne $interactiveSelectedIndices -and (($index + 1) -notin $interactiveSelectedIndices)) {
-                Add-DriverResult -Update $update -Status 'Skipped' -Detail 'NotSelected'
                 continue
             }
 
@@ -1075,6 +1188,12 @@ function Invoke-DriverUpdateDeployment {
             Write-Log -Message "Installing $($readyToInstall.Count) driver update(s)."
             $installer = $session.CreateUpdateInstaller()
             $installer.Updates = $readyToInstall
+            if ($Interactive) {
+                # Autoriser les invites de source lorsque le pilote les utilise.
+                # Ne garantit pas que tous les installeurs afficheront une UI.
+                try { $installer.AllowSourcePrompts = $true }
+                catch { Write-Log -Level 'WARN' -Message "AllowSourcePrompts indisponible: $($_.Exception.Message)" }
+            }
             $installationResult = $installer.Install()
             $installResultName = Get-OperationResultName -ResultCode ([int]$installationResult.ResultCode)
             $rebootRequired = [bool]$installationResult.RebootRequired
@@ -1331,10 +1450,10 @@ function Invoke-ManualDriverUpdate {
     } else {
         Write-Host '  INSTALLATION MANUELLE' -ForegroundColor Cyan
         Write-Host '  1. Recherche des pilotes disponibles'
-        Write-Host '  2. Choix des pilotes autorisés'
-        Write-Host "  3. Vérification et confirmation avant installation"
+        Write-Host '  2. Cases à cocher, y compris les pilotes nécessitant une intervention'
+        Write-Host "  3. Validation explicite avant installation"
         Write-Host ''
-        Write-Host '  Aucune modification avant votre confirmation.' -ForegroundColor Yellow
+        Write-Host '  Aucune modification avant votre confirmation. Les pilotes sensibles sont signalés.' -ForegroundColor Yellow
     }
     Write-Host ''
     try {
@@ -1384,8 +1503,8 @@ function Show-MainMenu {
     Write-Host '  [1] Rechercher les pilotes disponibles' -ForegroundColor White
     Write-Host '      Consulter uniquement, sans rien installer.' -ForegroundColor DarkGray
     Write-Host ''
-    Write-Host '  [2] Choisir les pilotes à installer' -ForegroundColor White
-    Write-Host '      Sélection puis confirmation obligatoire.' -ForegroundColor DarkGray
+    Write-Host '  [2] Cocher les pilotes à installer' -ForegroundColor White
+    Write-Host '      Cases [ ]/[x], validation et avertissements pour les pilotes sensibles.' -ForegroundColor DarkGray
     Write-Host ''
     Write-Host '  [3] Afficher le dernier bilan'
     Write-Host '  [4] Consulter le journal technique'
