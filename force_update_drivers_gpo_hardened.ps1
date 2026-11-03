@@ -390,17 +390,17 @@ function Set-DriverGlobalProxyCredentials {
 using System;
 using System.Runtime.InteropServices;
 public static class DriversUpdateWinHttpNative {
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
     public struct Credentials {
-        [MarshalAs(UnmanagedType.LPWStr)] public string UserName;
-        [MarshalAs(UnmanagedType.LPWStr)] public string Password;
-        [MarshalAs(UnmanagedType.LPWStr)] public string Realm;
+        [MarshalAs(UnmanagedType.LPStr)] public string UserName;
+        [MarshalAs(UnmanagedType.LPStr)] public string Password;
+        [MarshalAs(UnmanagedType.LPStr)] public string Realm;
         public UInt32 AuthScheme;
-        [MarshalAs(UnmanagedType.LPWStr)] public string HostName;
+        [MarshalAs(UnmanagedType.LPStr)] public string HostName;
         public UInt32 Port;
-        [MarshalAs(UnmanagedType.LPWStr)] public string Url;
+        [MarshalAs(UnmanagedType.LPStr)] public string Url;
     }
-    [DllImport("winhttp.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    [DllImport("winhttp.dll", SetLastError = true, CharSet = CharSet.Ansi)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool WinHttpSetOption(IntPtr handle, UInt32 option, ref Credentials credentials, UInt32 length);
 }
