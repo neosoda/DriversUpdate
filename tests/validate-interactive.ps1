@@ -101,23 +101,34 @@ if ((Get-DriverEligibilityReason -Update $updates.Items[1]) -cne 'ExcludedClass:
 Write-Output 'PASS: fail-closed eligibility'
 
 
-# Regression: le menu manuel doit pouvoir COCHER meme les pilotes CanRequestUserInput.
-# Le filtrage GPO reste inchangé et les classes sensibles exigent RISQUES.
-$manualAst = [System.Management.Automation.Language.Parser]::ParseFile($menu, [ref]$tokens, [ref]$errors)
-if ($errors.Count -ne 0) { throw 'Manual PowerShell syntax errors.' }
+# Regression : selection simple, sans confirmation RISQUES/INSTALLER.
+# Sous Windows, le dialogue WinForms selectionne les pilotes en un clic.
+$manualTokens = $null
+$manualErrors = $null
+$manualAst = [System.Management.Automation.Language.Parser]::ParseFile($menu, [ref]$manualTokens, [ref]$manualErrors)
+if ($manualErrors.Count -ne 0) {
+    throw ("Manual syntax errors: " + ($manualErrors | ForEach-Object { $_.Message } | Out-String))
+}
 $manualFunctions = @{}
 $manualAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
     ForEach-Object { $manualFunctions[$_.Name] = $_.Extent.Text }
-foreach ($name in @('Get-ManualDriverBlockReason', 'Test-ManualDriverIsSensitive',
-                    'Get-ManualDriverWarnings', 'Write-ManualDriverChecklist', 'Read-InteractiveDriverChoice')) {
-    if (-not $manualFunctions.ContainsKey($name)) { throw "Manual missing $name" }
+foreach ($name in @('Get-ManualDriverBlockReason', 'Read-ConsoleDriverChoice', 'Show-DriverSelectionDialog', 'Read-InteractiveDriverChoice')) {
+    if (-not $manualFunctions.ContainsKey($name)) { throw "Missing manual function: $name" }
     . ([scriptblock]::Create($manualFunctions[$name]))
 }
+
 $manualRaw = Get-Content -LiteralPath $menu -Raw -Encoding UTF8
-if (-not $manualRaw.Contains('$exclusion = Get-ManualDriverBlockReason -Update $update') -or
-    -not $manualRaw.Contains('if ($Interactive) {') -or
+foreach ($required in @('System.Windows.Forms.CheckedListBox', '$checklist.CheckOnClick = $true',
+                        '$form.ShowDialog()', "Installer la sélection", 'Tout cocher', 'Tout décocher',
+                        '$originalIndices.Add($i + 1)', '$exclusion = Get-ManualDriverBlockReason -Update $update')) {
+    if (-not $manualRaw.Contains($required)) { throw "Manual GUI missing: $required" }
+}
+if ($manualRaw.Contains('Tapez RISQUES') -or $manualRaw.Contains('Tapez INSTALLER')) {
+    throw 'Redundant installation confirmation must not return'
+}
+if (-not $manualRaw.Contains('if ($Interactive) {') -or
     -not $manualRaw.Contains('$installer.AllowSourcePrompts = $true')) {
-    throw 'The selected manual drivers are not wired into the Windows Update installer.'
+    throw 'Manual selection must still flow into the WUA installer'
 }
 
 $AcceptEula = $true
@@ -136,29 +147,29 @@ $manualUpdates = [pscustomobject]@{
 }
 $manualUpdates | Add-Member -MemberType ScriptMethod -Name Item -Value { param([int]$index) return $this.Items[$index] }
 foreach ($update in $manualUpdates.Items) {
-    if ($null -ne (Get-ManualDriverBlockReason -Update $update)) { throw 'Interactive driver must be selectable' }
-    if ((Get-DriverEligibilityReason -Update $update) -cne 'RequiresInteraction') {
-        throw 'GPO must still refuse drivers requiring interaction'
-    }
+    if ($null -ne (Get-ManualDriverBlockReason -Update $update)) { throw 'Manual driver wrongly excluded' }
+    if ((Get-DriverEligibilityReason -Update $update) -cne 'RequiresInteraction') { throw 'GPO exclusion unexpectedly relaxed' }
 }
-if (-not (Test-ManualDriverIsSensitive -Update $manualUpdates.Items[1])) { throw 'Firmware risk not identified' }
-if (-not (Test-ManualDriverIsSensitive -Update $manualUpdates.Items[2])) { throw 'Network risk not identified' }
-if (Test-ManualDriverIsSensitive -Update $manualUpdates.Items[0]) { throw 'Monitor must not be sensitive' }
 
-function Assert-ManualChoice {
+function Assert-ManualConsole {
     param([string[]]$Answers, [bool]$Cancelled, [string]$Expected)
     $script:answers = $Answers
     $script:answerIndex = 0
-    $result = Read-InteractiveDriverChoice -Updates $manualUpdates
-    if ([bool]$result.Cancelled -ne $Cancelled -or ((@($result.SelectedIndices) -join ',') -cne $Expected)) {
-        throw "Manual choice failed: $($Answers -join ',') -> Cancelled=$($result.Cancelled), indices=$(@($result.SelectedIndices) -join ',')"
+    $result = Read-ConsoleDriverChoice -Updates $manualUpdates
+    if ([bool]$result.Cancelled -ne $Cancelled -or (@($result.SelectedIndices) -join ',') -cne $Expected) {
+        throw "Console selection failed: $($Answers -join ',')"
     }
-    if ($script:answerIndex -ne $script:answers.Count) { throw 'Manual flow did not consume expected confirmations' }
 }
-Assert-ManualChoice -Answers @('1','V','INSTALLER') -Cancelled $false -Expected '1'
-Assert-ManualChoice -Answers @('2','3','V','RISQUES','INSTALLER') -Cancelled $false -Expected '2,3'
-Assert-ManualChoice -Answers @('T','V','RISQUES','INSTALLER') -Cancelled $false -Expected '1,2,3'
-Assert-ManualChoice -Answers @('1','1','V','0') -Cancelled $true -Expected ''
-Assert-ManualChoice -Answers @('2','V','NON','0') -Cancelled $true -Expected ''
-Assert-ManualChoice -Answers @('0') -Cancelled $true -Expected ''
-Write-Output 'PASS: manual checkboxes, 3 interactive drivers, sensitive warnings, opt-in confirmations and cancellation'
+Assert-ManualConsole -Answers @('1,3') -Cancelled $false -Expected '1,3'
+Assert-ManualConsole -Answers @('T') -Cancelled $false -Expected '1,2,3'
+Assert-ManualConsole -Answers @('0') -Cancelled $true -Expected ''
+Assert-ManualConsole -Answers @('invalid', '2') -Cancelled $false -Expected '2'
+
+# Un dialogue qui se termine par Annuler ne doit jamais etre transforme en
+# installation. Le test simule l'interface sans ouvrir de fenetre WinForms.
+function Show-DriverSelectionDialog { param($Updates)
+    return [pscustomobject]@{ Cancelled = $true; SelectedIndices = @() }
+}
+$cancelled = Read-InteractiveDriverChoice -Updates $manualUpdates
+if (-not $cancelled.Cancelled) { throw 'GUI cancellation must not start an installation' }
+Write-Output 'PASS: GUI wiring, immediate install, console fallback and unchanged GPO restrictions'
