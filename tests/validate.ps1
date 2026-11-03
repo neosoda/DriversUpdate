@@ -42,6 +42,37 @@ if ($loadedConfig['IncludedTitleContains'].Count -ne 1) { throw 'Single-item con
 Remove-Item -LiteralPath $script:ConfigPath -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $script:LogFile -ErrorAction SilentlyContinue
 
+# Proxy SYSTEM : valider les options et refuser une configuration dangereuse.
+foreach ($name in @('Initialize-DriverProxy', 'Restore-DriverProxy', 'Set-DriverSessionProxy', 'Get-DriverProxyCredential', 'Set-DriverGlobalProxyCredentials')) {
+    if (-not $functions.ContainsKey($name)) { throw "Missing SYSTEM proxy function: $name" }
+}
+$script:ConfigPath = Join-Path $env:TEMP ('driversupdate-proxy-ci-' + [guid]::NewGuid().ToString('N') + '.json')
+try {
+    '{"Proxy":{"Mode":"Temporary","Address":"172.17.0.1:3128","BypassList":"<local>","CredentialFile":"","AuthenticationScheme":"Basic","UseWinHttpGlobalCredentials":true}}' |
+        Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
+    $proxyConfig = Get-DriverConfiguration
+    if ($proxyConfig['Proxy'].Mode -cne 'Temporary' -or $proxyConfig['Proxy'].Address -cne '172.17.0.1:3128') {
+        throw 'Valid SYSTEM proxy configuration was not preserved'
+    }
+    if ($proxyConfig['ExcludedDriverClasses'].Count -ne 5) { throw 'Proxy config must preserve safe driver exclusions' }
+
+    foreach ($badValue in @('{"Proxy":{"Mode":"Temporary","Address":"https://bad:3128"}}',
+                           '{"Proxy":{"Mode":"Temporary","Address":"proxy:99999"}}',
+                           '{"Proxy":{"Mode":"Temporary","Address":"proxy:3128","CredentialFile":"relative.xml"}}',
+                           '{"Proxy":{"Mode":"Unknown"}}',
+                           '{"Proxy":{"UseWinHttpGlobalCredentials":"true"}}',
+                           '{"Proxy":{"CredentialPassword":"plaintext"}}')) {
+        $badValue | Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
+        $rejected = $false
+        try { $null = Get-DriverConfiguration } catch { $rejected = $true }
+        if (-not $rejected) { throw "Unsafe proxy configuration accepted: $badValue" }
+    }
+} finally {
+    Remove-Item -LiteralPath $script:ConfigPath -ErrorAction SilentlyContinue
+}
+Write-Output 'PASS: SYSTEM proxy config, blocked plaintext credentials, validation and functions'
+
+
 function Get-ComPropertyValue { param($Object, [string]$Name) return $Object.$Name }
 function Get-PreviousState { return $script:FakeState }
 function Write-Log { param([string]$Level, [string]$Message) }
