@@ -286,7 +286,7 @@ function Get-DriverConfiguration {
             $proxy = $config['Proxy']
             if ($proxy.Mode -notin @('System', 'Temporary')) { throw 'Proxy.Mode must be System or Temporary' }
             if ($proxy.Mode -eq 'Temporary') {
-                if ($proxy.Address -cnotmatch '^([A-Za-z0-9.-]+):([0-9]{1,5})$') {
+                if (-not ($proxy.Address -match '^([A-Za-z0-9.-]+):([0-9]{1,5})$')) {
                     throw 'Proxy.Address must contain a host or IPv4 address and port, without credentials or scheme'
                 }
                 $portNumber = [int]$Matches[2]
@@ -849,7 +849,12 @@ function Invoke-DriverUpdateDeployment {
         try {
             $session = New-Object -ComObject Microsoft.Update.Session
             $session.ClientApplicationID = $ScriptName
-            Set-DriverSessionProxy -Session $session
+            # IWebProxy n'est pas pris en charge dans toutes les versions de Windows.
+            # Le proxy WinHTTP machine reste la voie principale, y compris sous SYSTEM.
+            try { Set-DriverSessionProxy -Session $session }
+            catch {
+                Write-Log -Level 'WARN' -Message "Proxy WUA indisponible, utilisation de WinHTTP: $($_.Exception.Message)"
+            }
 
             $searcher = $session.CreateUpdateSearcher()
             $searcher.SearchScope = 1
@@ -1111,6 +1116,8 @@ try {
         catch {
             Write-Output "DriversUpdate proxy restoration failed: $($_.Exception.Message)"
             $exitCode = $ExitCodes.PrerequisiteFailed
+            try { Save-State -ExitCode $exitCode -Outcome 'ProxyRestoreFailed' }
+            catch { Write-Output "DriversUpdate state write failed: $($_.Exception.Message)" }
         }
     }
     $script:ProxyCredential = $null
