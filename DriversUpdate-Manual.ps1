@@ -6,46 +6,72 @@
     Les pilotes ne sont installes qu'apres selection et confirmation.
 #>
 [CmdletBinding()]
-param()
+param(
+    # Marqueur interne pour eviter une relance en boucle.
+    [switch]$ChildWindow
+)
 
-# Forcer Windows PowerShell 5.1 x64 pour les composants COM Windows Update.
-if (($PSVersionTable.PSEdition -ne 'Desktop') -or
-    ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess)) {
-    $winps = if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
-        Join-Path $env:WINDIR 'Sysnative\WindowsPowerShell\v1.0\powershell.exe'
-    } else {
-        Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    }
-    & $winps -NoProfile -ExecutionPolicy Bypass -File $PSCommandPath
-    exit $LASTEXITCODE
-}
-
-# Elevation UAC automatique : un clic droit > "Executer avec PowerShell"
-# suffit. Ne jamais demander l'elevation pour une session non interactive.
 function Test-IsAdministrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
-    throw 'Le menu doit etre lance dans une console interactive, pas par GPO ou sous SYSTEM.'
+# Le lancement "Executer avec PowerShell" depuis l'Explorateur peut
+# rediriger l'entree standard. Ne pas fermer le script avant l'elevation.
+if (-not [Environment]::UserInteractive) {
+    Write-Host 'DriversUpdate Manual exige une session utilisateur interactive.' -ForegroundColor Red
+    exit 101
 }
 
-if (-not (Test-IsAdministrator)) {
-    $powerShellExe = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    Write-Host '  Droits administrateur necessaires : demande UAC en cours...' -ForegroundColor Yellow
+$isAdmin = Test-IsAdministrator
+$isNativePowerShell = ($PSVersionTable.PSEdition -eq 'Desktop') -and
+    (-not [Environment]::Is64BitOperatingSystem -or [Environment]::Is64BitProcess)
+$inputRedirected = $false
+try { $inputRedirected = [Console]::IsInputRedirected } catch { }
+
+# En cas de lancement par l'Explorateur : ouvrir une VRAIE console
+# interactive, elevee si necessaire. Pour les chemins avec espaces,
+# utiliser un seul argument -File entoure de guillemets.
+if (-not $ChildWindow -and (-not $isAdmin -or -not $isNativePowerShell -or $inputRedirected)) {
+    $windowsPowerShell = if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+        Join-Path $env:WINDIR 'Sysnative\WindowsPowerShell\v1.0\powershell.exe'
+    } else {
+        Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    }
+    $arguments = '-NoLogo -NoProfile -ExecutionPolicy Bypass -STA -NoExit -File "{0}" -ChildWindow' -f $PSCommandPath
     try {
-        # Start-Process recompose les arguments : proteger le chemin avec des
-        # guillemets pour les dossiers contenant des espaces.
-        $quotedScriptPath = '"' + $PSCommandPath + '"'
-        Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $quotedScriptPath) -Verb RunAs -ErrorAction Stop | Out-Null
+        $start = @{
+            FilePath = $windowsPowerShell
+            ArgumentList = $arguments
+            ErrorAction = 'Stop'
+            PassThru = $true
+        }
+        if (-not $isAdmin) {
+            Write-Host 'DriversUpdate : demande de droits administrateur (UAC)...' -ForegroundColor Cyan
+            $start.Verb = 'RunAs'
+        }
+        $process = Start-Process @start
+        if ($null -eq $process) { throw "Impossible d'ouvrir Windows PowerShell." }
+        # La nouvelle fenetre reste ouverte si elle rencontre une erreur.
+        # Le menu 0 fermera normalement cette fenetre.
+        exit 0
     } catch {
-        Write-Host ("  Elevation refusee ou impossible : {0}" -f $_.Exception.Message) -ForegroundColor Red
+        Write-Host ("Impossible de lancer DriversUpdate : {0}" -f $_.Exception.Message) -ForegroundColor Red
+        try { [void](Read-Host 'Appuyez sur Entree pour fermer') } catch { }
         exit 101
     }
-    # Le menu sera affiche dans la nouvelle console elevee uniquement.
-    exit 0
+}
+
+if (-not $isAdmin) {
+    Write-Host "DriversUpdate : droits administrateur absents dans la session relancee." -ForegroundColor Red
+    try { [void](Read-Host 'Appuyez sur Entree pour fermer') } catch { }
+    exit 101
+}
+if (-not $isNativePowerShell) {
+    Write-Host "DriversUpdate : Windows PowerShell 5.1 64 bits requis." -ForegroundColor Red
+    try { [void](Read-Host 'Appuyez sur Entree pour fermer') } catch { }
+    exit 102
 }
 
 # Etat partage avec le moteur autonome ci-dessous.
@@ -1553,10 +1579,6 @@ function Show-MainMenu {
     Write-Host ''
 }
 
-if (-not [Environment]::UserInteractive -or [Console]::IsInputRedirected) {
-    throw 'Le menu doit être lancé dans une console Windows interactive, et non par GPO ou entrée redirigée.'
-}
-
 while ($true) {
     Show-MainMenu
     $choice = Read-Host '  Votre choix (0 à 4)'
@@ -1566,7 +1588,7 @@ while ($true) {
             '2' { Invoke-ManualDriverUpdate -Mode 'Install' }
             '3' { Show-LastState }
             '4' { Show-RecentLog }
-            '0' { return }
+            '0' { if ($ChildWindow) { exit 0 }; return }
             default { Write-Host 'Choix non reconnu. Saisissez un chiffre entre 0 et 4.' -ForegroundColor Yellow }
         }
     } catch {
