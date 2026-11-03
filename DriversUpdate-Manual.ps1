@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Console independante DriversUpdate : recherche et installation en francais.
 .DESCRIPTION
