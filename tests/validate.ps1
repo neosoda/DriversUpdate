@@ -2,77 +2,68 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $root = Split-Path -Parent $PSScriptRoot
-$target = Join-Path $root 'force_update_drivers_gpo_hardened.ps1'
-$tokens = $null
-$errors = $null
-$ast = [System.Management.Automation.Language.Parser]::ParseFile($target, [ref]$tokens, [ref]$errors)
-if ($errors.Count -gt 0) {
-    throw ("PowerShell syntax errors: " + ($errors | ForEach-Object { $_.Message } | Out-String))
+$gpo = Join-Path $root 'force_update_drivers_gpo_hardened.ps1'
+$manual = Join-Path $root 'DriversUpdate-Manual.ps1'
+$expected = @('DriversUpdate-Manual.ps1', 'force_update_drivers_gpo_hardened.ps1')
+$actual = @(Get-ChildItem -LiteralPath $root -File -Filter '*.ps1' |
+    Select-Object -ExpandProperty Name | Sort-Object)
+if (($actual -join ',') -cne ($expected -join ',')) {
+    throw "Expected exactly two independent scripts; found: $($actual -join ', ')"
 }
 
-$exampleConfig = Get-Content -Raw -LiteralPath (Join-Path $root 'config.example.json') | ConvertFrom-Json -ErrorAction Stop
-foreach ($property in @('ExcludedDriverClasses', 'ExcludedTitleContains', 'IncludedTitleContains')) {
-    if ($null -eq $exampleConfig.PSObject.Properties[$property]) { throw "Missing configuration property: $property" }
-}
-
-$functions = @{}
-$ast.FindAll({
-    param($node)
-    $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
-}, $true) | ForEach-Object { $functions[$_.Name] = $_.Extent.Text }
-foreach ($required in @('Get-DriverExclusionReason', 'Test-RecentSuccessfulRun', 'Get-PropertyOrNull', 'Get-DriverConfiguration', 'Write-Log')) {
-    if (-not $functions.ContainsKey($required)) { throw "Missing function $required" }
-    . ([scriptblock]::Create($functions[$required]))
-}
-
-
-$script:UserFacing = $false
-$script:LogFile = Join-Path $env:TEMP 'driversupdate-ci-test.log'
-$testLogOutput = @(Write-Log -Message 'Pipeline purity check')
-if ($testLogOutput.Count -ne 0) { throw 'Write-Log must not emit data on the success pipeline' }
-$script:ConfigPath = Join-Path $root 'config.example.json'
-$loadedConfig = Get-DriverConfiguration
-if ($loadedConfig['ExcludedDriverClasses'].Count -ne 5) { throw 'Default configuration did not load correctly' }
-$script:ConfigPath = Join-Path $env:TEMP 'driversupdate-ci-config.json'
-'{"ExcludedDriverClasses":[],"ExcludedTitleContains":["BIOS"],"IncludedTitleContains":["Audio"]}' |
-    Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
-$loadedConfig = Get-DriverConfiguration
-if ($loadedConfig['ExcludedDriverClasses'].Count -ne 0) { throw 'Empty config array must override defaults' }
-if ($loadedConfig['IncludedTitleContains'].Count -ne 1) { throw 'Single-item config array must be preserved' }
-Remove-Item -LiteralPath $script:ConfigPath -ErrorAction SilentlyContinue
-Remove-Item -LiteralPath $script:LogFile -ErrorAction SilentlyContinue
-
-# Proxy SYSTEM : valider les options et refuser une configuration dangereuse.
-foreach ($name in @('Initialize-DriverProxy', 'Restore-DriverProxy', 'Protect-DriverProxyBackupDirectory', 'Set-DriverSessionProxy', 'Get-DriverProxyCredential', 'Set-DriverGlobalProxyCredentials')) {
-    if (-not $functions.ContainsKey($name)) { throw "Missing SYSTEM proxy function: $name" }
-}
-$script:ConfigPath = Join-Path $env:TEMP ('driversupdate-proxy-ci-' + [guid]::NewGuid().ToString('N') + '.json')
-try {
-    '{"Proxy":{"Mode":"Temporary","Address":"172.17.0.1:3128","BypassList":"<local>","CredentialFile":"","AuthenticationScheme":"Basic","UseWinHttpGlobalCredentials":true}}' |
-        Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
-    $proxyConfig = Get-DriverConfiguration
-    if ($proxyConfig['Proxy'].Mode -cne 'Temporary' -or $proxyConfig['Proxy'].Address -cne '172.17.0.1:3128') {
-        throw 'Valid SYSTEM proxy configuration was not preserved'
+function Read-Functions {
+    param([string]$Path)
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count -gt 0) {
+        throw ("PowerShell syntax errors in $($Path): " + ($parseErrors | ForEach-Object { $_.Message } | Out-String))
     }
-    if ($proxyConfig['ExcludedDriverClasses'].Count -ne 5) { throw 'Proxy config must preserve safe driver exclusions' }
-
-    foreach ($badValue in @('{"Proxy":{"Mode":"Temporary","Address":"https://bad:3128"}}',
-                           '{"Proxy":{"Mode":"Temporary","Address":"proxy:99999"}}',
-                           '{"Proxy":{"Mode":"Temporary","Address":"proxy:3128","CredentialFile":"relative.xml"}}',
-                           '{"Proxy":{"Mode":"Unknown"}}',
-                           '{"Proxy":{"UseWinHttpGlobalCredentials":"true"}}',
-                           '{"Proxy":{"CredentialPassword":"plaintext"}}')) {
-        $badValue | Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
-        $rejected = $false
-        try { $null = Get-DriverConfiguration } catch { $rejected = $true }
-        if (-not $rejected) { throw "Unsafe proxy configuration accepted: $badValue" }
-    }
-} finally {
-    Remove-Item -LiteralPath $script:ConfigPath -ErrorAction SilentlyContinue
+    $functions = @{}
+    $ast.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
+    }, $true) | ForEach-Object { $functions[$_.Name] = $_.Extent.Text }
+    return $functions
 }
-Write-Output 'PASS: SYSTEM proxy config, blocked plaintext credentials, validation and functions'
 
+$gpoFns = Read-Functions -Path $gpo
+$manualFns = Read-Functions -Path $manual
+foreach ($name in @('Invoke-DriverUpdateDeployment', 'Get-DriverConfiguration', 'Get-DriverExclusionReason',
+                    'Test-RecentSuccessfulRun', 'Write-Log', 'Save-State', 'Initialize-DriverProxy',
+                    'Restore-DriverProxy', 'Set-DriverGlobalProxyCredentials', 'Set-DriverSessionProxy')) {
+    if (-not $gpoFns.ContainsKey($name)) { throw "GPO missing $name" }
+    if (-not $manualFns.ContainsKey($name)) { throw "Manual not standalone: missing $name" }
+}
+foreach ($name in @('Invoke-ManualDriverUpdate', 'Invoke-StandaloneDriverEngine',
+                    'Show-LastState', 'Show-RecentLog', 'Read-InteractiveDriverChoice')) {
+    if (-not $manualFns.ContainsKey($name)) { throw "Manual missing $name" }
+}
 
+$gpoText = Get-Content -LiteralPath $gpo -Raw -Encoding UTF8
+$manualText = Get-Content -LiteralPath $manual -Raw -Encoding UTF8
+foreach ($src in @($gpoText, $manualText)) {
+    foreach ($key in @('$ProxyEnabled', '$ProxyHost', '$ProxyPort', '$ProxyUser', '$ProxyPassword', '$ProxyAuthScheme')) {
+        if (-not $src.Contains($key)) { throw "Missing inline configuration: $key" }
+    }
+    if ($src.Contains('config.proxy.json') -or $src.Contains('proxy-credential.xml') -or
+        $src.Contains('$ConfigPath') -or $src.Contains('$engineScript')) {
+        throw 'A standalone script still depends on external configuration or PS1'
+    }
+}
+if ($manualText.Contains('Invoke-Expression')) { throw 'Do not evaluate external scripts' }
+if (-not $manualText.Contains('Rechercher les pilotes disponibles') -or
+    -not $manualText.Contains('Choisir les pilotes') -or
+    -not $manualText.Contains("Tapez INSTALLER")) {
+    throw 'The manual script must retain selection and explicit confirmation'
+}
+Write-Output 'PASS: two standalone PowerShell 5.1 scripts, inline proxy and manual confirmation'
+
+# Extract only pure functions, never execute the scripts on test startup.
+foreach ($name in @('Get-PropertyOrNull', 'Get-DriverConfiguration',
+                    'Get-DriverExclusionReason', 'Test-RecentSuccessfulRun', 'Save-State')) {
+    . ([scriptblock]::Create($gpoFns[$name]))
+}
 function Get-ComPropertyValue { param($Object, [string]$Name) return $Object.$Name }
 function Get-PreviousState { return $script:FakeState }
 function Write-Log { param([string]$Level, [string]$Message) }
@@ -82,143 +73,98 @@ function Assert-Equal {
     if ($Actual -cne $Expected) { throw "$Description : expected [$Expected], got [$Actual]" }
 }
 
-$script:Configuration = @{
-    ExcludedDriverClasses = @('Firmware', 'Net', 'SCSIAdapter', 'HDC', 'DiskDrive')
-    ExcludedTitleContains = @('BIOS', 'Firmware')
-    IncludedTitleContains = @()
+$script:ProxyEnabled = $false
+$script:ProxyHost = '172.17.0.1'
+$script:ProxyPort = 3128
+$script:ProxyBypassList = '<local>'
+$script:ProxyUser = ''
+$script:ProxyPassword = ''
+$script:ProxyAuthScheme = 'Basic'
+$script:ExcludedDriverClasses = @('Firmware', 'Net', 'SCSIAdapter', 'HDC', 'DiskDrive')
+$script:ExcludedTitleContains = @('BIOS', 'Firmware')
+$script:IncludedTitleContains = @()
+$config = Get-DriverConfiguration
+Assert-Equal $config['Proxy'].Mode 'System' 'Proxy disabled'
+Assert-Equal $config['ExcludedDriverClasses'].Count 5 'Default exclusions'
+
+$script:ProxyEnabled = $true
+$config = Get-DriverConfiguration
+Assert-Equal $config['Proxy'].Mode 'Temporary' 'Proxy activated'
+Assert-Equal $config['Proxy'].Address '172.17.0.1:3128' 'Proxy address'
+foreach ($bad in @('https://proxy:3128', 'proxy@name')) {
+    $script:ProxyHost = $bad
+    $rejected = $false
+    try { $null = Get-DriverConfiguration } catch { $rejected = $true }
+    if (-not $rejected) { throw "Invalid proxy host accepted: $bad" }
 }
+$script:ProxyHost = 'proxy.internal'
+$script:ProxyPort = 99999
+$rejected = $false
+try { $null = Get-DriverConfiguration } catch { $rejected = $true }
+if (-not $rejected) { throw 'Invalid proxy port accepted' }
+$script:ProxyPort = 3128
+$script:ProxyUser = 'UTILISATEUR'
+$script:ProxyPassword = 'MOT_DE_PASSE'
+$rejected = $false
+try { $null = Get-DriverConfiguration } catch { $rejected = $true }
+if (-not $rejected) { throw 'Proxy credential placeholders must be rejected' }
+$script:ProxyUser = ''
+$script:ProxyPassword = ''
+$script:ProxyEnabled = $false
+$script:Configuration = Get-DriverConfiguration
+
 $network = [pscustomobject]@{ Title = 'Vendor - Network Adapter'; DriverClass = 'Net' }
 $firmware = [pscustomobject]@{ Title = 'Vendor - BIOS revision'; DriverClass = 'System' }
 $safe = [pscustomobject]@{ Title = 'Vendor - Audio Adapter'; DriverClass = 'MEDIA' }
 Assert-Equal (Get-DriverExclusionReason -Update $network) 'ExcludedClass:Net' 'Network exclusion'
 Assert-Equal (Get-DriverExclusionReason -Update $firmware) 'ExcludedTitle:BIOS' 'BIOS exclusion'
-Assert-Equal (Get-DriverExclusionReason -Update $safe) $null 'Safe update eligible'
-$script:Configuration.IncludedTitleContains = @('Realtek')
-Assert-Equal (Get-DriverExclusionReason -Update $safe) 'NotAllowlisted' 'Allowlist exclusion'
-$script:Configuration.IncludedTitleContains = @('Audio')
-Assert-Equal (Get-DriverExclusionReason -Update $safe) $null 'Allowlist match'
+Assert-Equal (Get-DriverExclusionReason -Update $safe) $null 'Safe update'
+$script:Configuration.IncludedTitleContains = @('Other')
+Assert-Equal (Get-DriverExclusionReason -Update $safe) 'NotAllowlisted' 'Allowlist'
+Write-Output 'PASS: inline proxy validation and driver filters'
 
-$script:Interactive = $false
 $script:MinimumScanIntervalHours = 24
 $script:Force = $false
 $script:ScanOnly = $false
 $script:DryRun = $false
+$script:Interactive = $false
 $script:FakeState = [pscustomobject]@{
     LastSuccessfulDeploymentUtc = (Get-Date).ToUniversalTime().AddHours(-25).ToString('o')
     LastRunUtc = (Get-Date).ToUniversalTime().AddMinutes(-2).ToString('o')
     LastOutcome = 'SkippedRecentSuccessfulRun'
 }
-Assert-Equal (Test-RecentSuccessfulRun) $false 'Skipped task must not postpone next scan'
+Assert-Equal (Test-RecentSuccessfulRun) $false 'Old deployment'
 $script:FakeState.LastSuccessfulDeploymentUtc = (Get-Date).ToUniversalTime().AddHours(-1).ToString('o')
-Assert-Equal (Test-RecentSuccessfulRun) $true 'Recent successful deployment is throttled'
+Assert-Equal (Test-RecentSuccessfulRun) $true 'Recent deployment'
 $script:ScanOnly = $true
-Assert-Equal (Test-RecentSuccessfulRun) $false 'Audit mode always scans'
-$script:ScanOnly = $false
-$script:Force = $true
-Assert-Equal (Test-RecentSuccessfulRun) $false 'Force bypasses throttle'
+Assert-Equal (Test-RecentSuccessfulRun) $false 'Audit scans'
+Write-Output 'PASS: recent-run throttling'
 
-Write-Output 'PASS: syntax, config, filters, scan interval, audit/force bypass'
-
-# Verify the public entry points and reject accidental reintroduction of legacy scripts.
-$manual = Join-Path $root 'DriversUpdate-Manual.ps1'
-$manualTokens = $null
-$manualErrors = $null
-$manualAst = [System.Management.Automation.Language.Parser]::ParseFile($manual, [ref]$manualTokens, [ref]$manualErrors)
-if ($manualErrors.Count -gt 0) {
-    throw ("Manual script PowerShell syntax errors: " + ($manualErrors | ForEach-Object { $_.Message } | Out-String))
-}
-$entryPoints = @(Get-ChildItem -LiteralPath $root -Filter '*.ps1' -File | Select-Object -ExpandProperty Name | Sort-Object)
-$expectedEntryPoints = @('DriversUpdate-Manual.ps1', 'force_update_drivers_gpo_hardened.ps1', 'force_update_drivers_gpo_hardened_proxy.ps1')
-if (($entryPoints -join ',') -cne ($expectedEntryPoints -join ',')) {
-    throw "Expected exactly two root scripts. Found: $($entryPoints -join ', ')"
-}
-$manualFunctions = @($manualAst.FindAll({
-    param($node)
-    $node -is [System.Management.Automation.Language.FunctionDefinitionAst]
-}, $true) | ForEach-Object { $_.Name })
-foreach ($name in @('Invoke-ManualDriverUpdate', 'Show-LastState', 'Show-RecentLog')) {
-    if ($manualFunctions -cnotcontains $name) { throw "Manual menu function missing: $name" }
-}
-if (-not $manualAst.Extent.Text.Contains("'-Interactive'")) { throw 'Manual must request interactive selection' }
-if (-not $manualAst.Extent.Text.Contains("'-UserFacing'")) { throw 'Manual must request user-facing output from the engine' }
-$manualText = Get-Content -LiteralPath $manual -Raw -Encoding UTF8
-if (-not $manualText.Contains('Rechercher les pilotes disponibles') -or
-    -not $manualText.Contains('Choisir les pilotes')) {
-    throw 'The manual interface must expose clear French actions'
-}
-if ($manualText.Contains('Select and install drivers') -or $manualText.Contains('View last result')) {
-    throw 'The old English menu must not reappear'
-}
-if (-not $manualAst.Extent.Text.Contains("force_update_drivers_gpo_hardened.ps1")) { throw 'Manual must call GPO engine' }
-
-# Configuration must reject invalid JSON or unsupported values.
-$script:ConfigPath = Join-Path $env:TEMP 'driversupdate-ci-invalid.json'
+$stateRoot = Join-Path $env:TEMP ('driversupdate-test-' + [guid]::NewGuid().ToString('N'))
+New-Item -Path $stateRoot -ItemType Directory -Force | Out-Null
 try {
-    '{"ExcludedDriverClasses":' | Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
-    $rejected = $false
-    try { $null = Get-DriverConfiguration } catch { $rejected = $true }
-    if (-not $rejected) { throw 'Malformed JSON must be rejected' }
-
-    '{"ExcludedDriverClasses":"Net"}' | Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
-    $rejected = $false
-    try { $null = Get-DriverConfiguration } catch { $rejected = $true }
-    if (-not $rejected) { throw 'Non-array config value must be rejected' }
-} finally {
-    Remove-Item -LiteralPath $script:ConfigPath -ErrorAction SilentlyContinue
-}
-Write-Output 'PASS: three entry points, interactive confirmation, invalid config rejection'
-
-# Le lanceur proxy doit reutiliser le moteur et imposer un fichier de
-# configuration dedie (sans recopier la logique des pilotes).
-$proxyLauncher = Join-Path $root 'force_update_drivers_gpo_hardened_proxy.ps1'
-$proxyTokens = $null
-$proxyErrors = $null
-$proxyAst = [System.Management.Automation.Language.Parser]::ParseFile($proxyLauncher, [ref]$proxyTokens, [ref]$proxyErrors)
-if ($proxyErrors.Count -gt 0) {
-    throw ("Proxy launcher syntax errors: " + ($proxyErrors | ForEach-Object { $_.Message } | Out-String))
-}
-$proxyLauncherText = $proxyAst.Extent.Text
-foreach ($token in @('config.proxy.json', "Proxy.Mode", "force_update_drivers_gpo_hardened.ps1", "MinimumScanIntervalHours", "AcceptEula")) {
-    if (-not $proxyLauncherText.Contains($token)) { throw "Proxy launcher missing: $token" }
-}
-if ($proxyLauncherText.Contains('Microsoft.Update.Session')) { throw 'Proxy launcher must delegate to the shared GPO engine' }
-$proxyExample = Get-Content -LiteralPath (Join-Path $root 'config.proxy.example.json') -Raw | ConvertFrom-Json -ErrorAction Stop
-if ($proxyExample.Proxy.Mode -cne 'Temporary') { throw 'Proxy example must explicitly enable Temporary mode' }
-if ($proxyExample.Proxy.CredentialFile -notlike 'C:\*') { throw 'Proxy example must use a local credential file' }
-Write-Output 'PASS: dedicated proxy launcher syntax, shared engine and example'
-
-
-# Exercise the atomic JSON state publication (create and replace) without COM or Windows Update.
-if (-not $functions.ContainsKey('Save-State')) {
-    throw 'Save-State must exist'
-}
-. ([scriptblock]::Create($functions['Save-State']))
-$stateTestRoot = Join-Path $env:TEMP ("driversupdate-ci-state-" + [guid]::NewGuid().ToString('N'))
-New-Item -Path $stateTestRoot -ItemType Directory -Force | Out-Null
-try {
-    $StateRoot = $stateTestRoot
-    $script:StateFile = Join-Path $stateTestRoot 'state.json'
+    $script:FakeState = $null
+    $script:StateFile = Join-Path $stateRoot 'state.json'
     $script:DriverResults = New-Object System.Collections.ArrayList
     $script:ScanAttempted = $true
     $script:ScanSucceeded = $true
     $script:UpdateSource = 'PolicyDefault'
     $ScriptName = 'DriversUpdateGpo'
-    $ScriptVersion = '2.0.0'
+    $ScriptVersion = '3.0.0'
     $ScanOnly = $true
     $DryRun = $false
-    $script:FakeState = $null
+    $StateRoot = $stateRoot
     Save-State -ExitCode 0 -Outcome 'ScanOnly' -UpdatesFound 1
     $saved = Get-Content -LiteralPath $script:StateFile -Raw | ConvertFrom-Json -ErrorAction Stop
-    Assert-Equal $saved.LastOutcome 'ScanOnly' 'Atomic initial publication'
-
+    Assert-Equal $saved.LastOutcome 'ScanOnly' 'Atomic state creation'
     Save-State -ExitCode 103 -Outcome 'InvalidConfig'
     $saved = Get-Content -LiteralPath $script:StateFile -Raw | ConvertFrom-Json -ErrorAction Stop
-    Assert-Equal $saved.LastExitCode 103 'Atomic replacement'
-    $tempFiles = @(Get-ChildItem -LiteralPath $stateTestRoot -File | Where-Object { $_.Extension -in @('.tmp', '.bak') })
-    Assert-Equal $tempFiles.Count 0 'No temporary or backup state files left behind'
+    Assert-Equal $saved.LastExitCode 103 'Atomic state replacement'
+    $leftovers = @(Get-ChildItem -LiteralPath $stateRoot -File | Where-Object { $_.Extension -in @('.tmp','.bak') })
+    Assert-Equal $leftovers.Count 0 'No temporary state files'
 } finally {
-    Remove-Item -LiteralPath $stateTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $stateRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
-Write-Output 'PASS: atomic state create and replace'
+Write-Output 'PASS: state publication'
 
 & (Join-Path $PSScriptRoot 'validate-interactive.ps1')

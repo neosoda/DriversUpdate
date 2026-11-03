@@ -1,354 +1,120 @@
 <div align="center">
 
-<img src="assets/readme-hero.svg" alt="DriversUpdate — mise à jour des pilotes Windows sous contrôle" width="100%">
+<img src="assets/readme-hero.svg" alt="DriversUpdate — gestion des pilotes Windows" width="100%">
 
-<br>
+# DriversUpdate
 
-[![CI PowerShell](https://github.com/neosoda/DriversUpdate/actions/workflows/powershell-ci.yml/badge.svg?branch=main)](https://github.com/neosoda/DriversUpdate/actions/workflows/powershell-ci.yml)
-![Windows 10 et 11](https://img.shields.io/badge/Windows-10%20%7C%2011-087CD9?logo=windows11&logoColor=white)
-![Windows PowerShell 5.1](https://img.shields.io/badge/PowerShell-5.1-3979C6?logo=powershell&logoColor=white)
-[![Licence MIT](https://img.shields.io/badge/Licence-MIT-36BDA8)](LICENSE)
+**Deux scripts PowerShell 5.1 indépendants. Aucun module externe, aucun JSON de configuration.**
 
-### Des pilotes Windows à jour. Sans perdre le contrôle.
-
-**Un moteur Windows Update, trois lancements :** console manuelle, GPO classique et GPO avec proxy sous SYSTEM.
-
-**Aucun module tiers · Stratégies Windows Update/WSUS respectées · Aucun redémarrage automatique**
-
-[**Utilisation manuelle**](#-utilisation-manuelle) · [**Déploiement GPO**](#-déploiement-par-gpo) · [**Configuration**](#-filtres-et-sécurité) · [**Diagnostic**](#-journaux-et-supervision)
+Windows 10/11 · Windows Update Agent · GPO / SYSTEM · Console manuelle en français · Proxy authentifié facultatif
 
 </div>
 
----
+## Deux fichiers, deux usages
 
-## 🧭 Quel script utiliser ?
+| Script | Utilisation |
+| --- | --- |
+| [force_update_drivers_gpo_hardened.ps1](force_update_drivers_gpo_hardened.ps1) | **GPO ou tâche planifiée SYSTEM**, totalement silencieux et sans session utilisateur |
+| [DriversUpdate-Manual.ps1](DriversUpdate-Manual.ps1) | **Exécution manuelle**, menu français, choix des pilotes et confirmation obligatoire |
 
-| Script | Pour qui ? | Comportement |
-| :--- | :--- | :--- |
-| **[DriversUpdate-Manual.ps1](DriversUpdate-Manual.ps1)** | Technicien, administrateur, intervention sur un poste | Console **en français**, recherche, choix individuel des pilotes, confirmation avant installation et bilan lisible. |
-| **[force_update_drivers_gpo_hardened.ps1](force_update_drivers_gpo_hardened.ps1)** | Parc informatique, GPO classique, compte SYSTEM | Moteur **sans interaction** ; utilise la configuration proxy machine existante par défaut. |
-| **[force_update_drivers_gpo_hardened_proxy.ps1](force_update_drivers_gpo_hardened_proxy.ps1)** | GPO, compte SYSTEM, réseau derrière un proxy | Lanceur distinct qui exige une configuration proxy et réutilise le moteur GPO commun. |
+**Chaque PS1 fonctionne tout seul.** Téléchargez le fichier correspondant et lancez-le sans copier l'autre. Les fonctions de recherche/installations sont embarquées dans les deux scripts, afin qu'ils restent réellement indépendants.
 
-**Trois points d'entrée, un seul moteur.** Les lanceurs manuel et proxy délèguent au script GPO commun : aucune logique d'installation de pilotes dupliquée.
+Ils respectent les politiques Windows Update et WSUS, ne forcent **jamais le redémarrage**, conservent les exclusions des pilotes sensibles (réseau, stockage, firmware...) et écrivent des logs / un état local.
 
-> [!IMPORTANT]
-> Le moteur peut installer des pilotes sans confirmation lorsqu'il est lancé directement en mode automatique. **Pour intervenir manuellement sur un poste, utilisez `DriversUpdate-Manual.ps1`.** Validez les installations sur un poste pilote avant toute généralisation.
+## Proxy : tout dans le PS1
 
-## 🚀 Utilisation manuelle
-
-### Installation et lancement
-
-Prérequis : **Windows 10 ou 11**, **Windows PowerShell 5.1**, droits **administrateur** et accès à la source de mises à jour autorisée par les stratégies de la machine.
+En début de **chaque fichier**, éditez les variables suivantes :
 
 ~~~powershell
-git clone https://github.com/neosoda/DriversUpdate.git
-cd DriversUpdate
-
-# Depuis une console Windows PowerShell ouverte en administrateur
-powershell.exe -NoProfile -File .\DriversUpdate-Manual.ps1
+$ProxyEnabled = $true                    # false : WinHTTP de la machine
+$ProxyHost = '172.17.0.1'
+$ProxyPort = 3128
+$ProxyBypassList = '<local>'
+$ProxyUser = 'UTILISATEUR'
+$ProxyPassword = 'MOT_DE_PASSE'
+$ProxyAuthScheme = 'Basic'
 ~~~
 
-Sans Git, téléchargez les deux scripts depuis le dépôt et placez-les **dans le même dossier**. La console manuelle a besoin du moteur à ses côtés.
+Remplacez les **deux valeurs fictives** par les identifiants réels uniquement dans **la copie locale déployée**. Le script refuse les valeurs de démonstration lorsque le proxy est activé. Si le proxy n'exige aucune authentification, laissez les deux chaînes vides.
 
-### À quoi ressemble le menu ?
-
-~~~text
-========================================================
-   DRIVERSUPDATE  |  GESTION DES PILOTES WINDOWS
-========================================================
-  Ordinateur : MON-PC
-  Autorisations : administrateur
-
-  QUE VOULEZ-VOUS FAIRE ?
-
-  [1] Rechercher les pilotes disponibles
-      Consulter uniquement, sans rien installer.
-
-  [2] Choisir les pilotes à installer
-      Sélection puis confirmation obligatoire.
-
-  [3] Afficher le dernier bilan
-  [4] Consulter le journal technique
-  [0] Quitter
-~~~
-
-La console affiche les **pilotes détectés**, ceux **autorisés** et ceux **exclus**, avec une explication. Elle présente ensuite un bilan en français : date, machine, résultat, pilotes installés et éventuel besoin de redémarrage. Le journal technique conserve les détails nécessaires au dépannage.
-
-### Rechercher sans installer
-
-Choisissez **1**. DriversUpdate interroge Windows Update, applique les filtres et affiche les résultats.
-
-**Aucun pilote n'est téléchargé ni installé**, et aucune licence n'est acceptée. L'outil peut toutefois démarrer les services Windows Update nécessaires et écrit son journal et son état local.
-
-### Choisir et installer des pilotes
-
-Choisissez **2**. Le parcours est guidé :
-
-1. **Recherche** des pilotes proposés par la source Windows Update ou WSUS configurée.
-2. **Sélection** parmi les pilotes autorisés (les pilotes exclus ne peuvent pas être choisis).
-3. **Récapitulatif et confirmation** avant téléchargement et installation.
-
-~~~text
-  ÉTAPE 2/3 - CHOIX DES PILOTES
-
-  [1] Pilote audio                       AUTORISÉ
-  [2] Pilote réseau                      EXCLU
-  [3] Pilote périphérique USB            AUTORISÉ
-
-  Numéros à installer : 1,3
-
-  ÉTAPE 3/3 - VÉRIFICATION AVANT INSTALLATION
-
-  2 pilotes sélectionnés
-  Tapez INSTALLER pour confirmer :
-~~~
-
-<sub>Exemple illustratif : les noms de pilotes et exclusions dépendent de la machine.</sub>
-
-| Saisie | Résultat |
-| :--- | :--- |
-| `1,3` | Sélectionne les pilotes 1 et 3. |
-| `1-3` | Sélectionne une plage, **seulement si tous les pilotes sont autorisés**. |
-| `T` | Sélectionne tous les pilotes autorisés. |
-| `0` ou Entrée vide | Annule l'installation. |
-| `?` | Rappelle l'aide à la saisie. |
-
-**Seule la saisie exacte de `INSTALLER` autorise le téléchargement et l'installation.** Une autre réponse annule l'opération. Un redémarrage peut être nécessaire après installation, mais le programme ne le déclenche jamais automatiquement.
-
-## 🏫 Déploiement par GPO
-
-Pour l'automatisation, utilisez **uniquement `force_update_drivers_gpo_hardened.ps1`**, sans l'interface manuelle.
-
-### Fonctionnement recommandé
-
-~~~mermaid
-flowchart LR
-    A["GPO / tâche planifiée<br/>SYSTEM"] --> B["Windows Update Agent"]
-    B --> C{"Stratégies WSUS/WU<br/>et filtres"}
-    C -->|"Exclu ou bloqué"| D["Journal + état JSON"]
-    C -->|"Autorisé"| E["Téléchargement<br/>et installation"]
-    E --> D
-    classDef main fill:#18354E,stroke:#4A9CCC,color:#FFFFFF;
-    classDef safe fill:#174A43,stroke:#4FBFA8,color:#FFFFFF;
-    class A,B,E main;
-    class C,D safe;
-~~~
-
-**Déploiement conseillé :** distribuer le script sur le disque local, puis l'exécuter via une **tâche planifiée GPO sous `NT AUTHORITY\SYSTEM`**, avec les privilèges les plus élevés.
-
-1. Dans **Configuration ordinateur → Préférences → Paramètres Windows → Fichiers**, copiez le moteur vers `C:\ProgramData\DriversUpdate\force_update_drivers_gpo_hardened.ps1`.
-2. Dans **Configuration ordinateur → Préférences → Paramètres du Panneau de configuration → Tâches planifiées**, créez une tâche sous **SYSTEM**.
-3. Utilisez un déclenchement **différé de 15 à 60 minutes** après le démarrage et, si souhaité, une récurrence hebdomadaire avec délai aléatoire.
-4. Déployez d'abord sur une **OU pilote**, contrôlez les exclusions, les journaux et les besoins de redémarrage, puis étendez le périmètre.
-
-**Programme :**
-
-~~~text
-%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe
-~~~
-
-**Arguments :**
-
-~~~text
--NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\DriversUpdate\force_update_drivers_gpo_hardened.ps1"
-~~~
-
-Le moteur conserve un intervalle minimal de **24 heures après un déploiement réussi**, sauf utilisation du paramètre `-Force`. Un **mutex** empêche deux exécutions concurrentes.
-
-> [!WARNING]
-> DriversUpdate **respecte les stratégies Windows Update et WSUS**. Il n'essaie pas de contourner une GPO qui exclut les pilotes, ni de basculer automatiquement vers Internet lorsqu'un serveur WSUS ne propose pas de pilotes.
-
-## 🛡️ Filtres et sécurité
-
-Les exclusions suivantes sont actives par défaut :
-
-| Type | Exclusion |
-| :--- | :--- |
-| **Classes de pilotes** | `Firmware`, `Net`, `SCSIAdapter`, `HDC`, `DiskDrive` |
-| **Mots-clés du titre** | `BIOS`, `Firmware` |
-| **Interaction utilisateur** | Pilotes nécessitant une intervention ou dont cette propriété ne peut pas être vérifiée |
-| **Source des mises à jour** | Celle autorisée par les stratégies Windows Update/WSUS |
-
-La configuration est **facultative**. Pour modifier les filtres, copiez [config.example.json](config.example.json) vers `C:\ProgramData\DriversUpdate\config.json` :
-
-~~~json
-{
-  "ExcludedDriverClasses": ["Firmware", "Net", "SCSIAdapter", "HDC", "DiskDrive"],
-  "ExcludedTitleContains": ["BIOS", "Firmware"],
-  "IncludedTitleContains": []
-}
-~~~
-
-`IncludedTitleContains` est une liste d'autorisation : non vide, elle limite les pilotes à ceux dont le titre contient au moins un terme indiqué. Les comparaisons sont **insensibles à la casse** et recherchent des sous-chaînes, **pas des expressions régulières**.
+- **GPO** : proxy activé par défaut, à compléter avant déploiement. Compatible SYSTEM sans session utilisateur.
+- **Manuel** : proxy désactivé par défaut ; changez ProxyEnabled en true uniquement si nécessaire.
+- L'outil sauvegarde la configuration WinHTTP, définit un proxy machine temporaire, transmet les identifiants à WinHTTP et essaie le proxy de session WUA. En fin de traitement, il restaure WinHTTP et ses paramètres. Après interruption brutale, il essaie de récupérer une sauvegarde lors du prochain lancement.
 
 > [!CAUTION]
-> Dans le JSON, un tableau vide **remplace** le filtre par défaut correspondant : `"ExcludedDriverClasses": []` supprime donc les exclusions de classes. À n'utiliser qu'après validation.
+> Un mot de passe inscrit dans un PS1 est **visible en clair** par quiconque peut lire le fichier, y compris dans les partages GPO/SYSVOL. **Ne commitez jamais des identifiants réels dans ce dépôt public** et ne stockez jamais une copie contenant des secrets dans un partage lisible par les utilisateurs du domaine. Distribuez une copie locale avec des ACL strictes SYSTEM / Administrateurs et des accès restreints à la source de distribution. Pour un grand parc, un proxy acceptant l'identité machine ou une règle d'accès Windows Update sans mot de passe est plus sûr. Aucun encodage Base64 n'apporte de protection.
 
-## 🌐 Proxy pour GPO / SYSTEM (sans utilisateur connecté)
+## Déploiement GPO
 
-DriversUpdate peut utiliser un **proxy machine temporaire**, sans dépendre du proxy WinINet de l'utilisateur connecté. C'est notamment utile pour une tâche planifiée GPO exécutée sous SYSTEM. Par défaut, **Proxy.Mode = System** ne modifie rien et utilise la configuration WinHTTP existante.
-
-Pour une exécution sous proxy, copiez **[config.proxy.example.json](config.proxy.example.json)** vers `C:\ProgramData\DriversUpdate\config.proxy.json`, puis adaptez l'adresse et les paramètres d'authentification. Gardez le fichier `config.json` pour le mode classique :
-
-~~~json
-{
-  "Proxy": {
-    "Mode": "Temporary",
-    "Address": "172.17.0.1:3128",
-    "BypassList": "<local>",
-    "CredentialFile": "C:\\ProgramData\\DriversUpdate\\proxy-credential.xml",
-    "AuthenticationScheme": "Basic",
-    "UseWinHttpGlobalCredentials": true
-  }
-}
-~~~
-
-Les filtres absents de ce JSON conservent leurs valeurs protectrices par défaut. L'adresse est un **hôte:port** sans préfixe HTTP, sans identifiant. BypassList utilise la syntaxe WinHTTP (valeur local, liste séparée par des points-virgules). Si le proxy **n'exige pas d'identifiant**, renseignez une chaîne vide pour CredentialFile.
-
-**Avec authentification :** les identifiants ne doivent figurer **ni dans le script, ni dans le JSON, ni dans SYSVOL**. Créez un PSCredential protégé par DPAPI **localement, sous le compte SYSTEM de chaque poste**. Exemple, depuis une console administrateur utilisant PsExec (Sysinternals) :
-
-~~~powershell
-psexec.exe -i -s powershell.exe -NoProfile
-# Dans la console SYSTEM qui s'ouvre (et non dans une session administrateur ordinaire) :
-New-Item -ItemType Directory -Force 'C:\ProgramData\DriversUpdate' | Out-Null
-Get-Credential | Export-Clixml 'C:\ProgramData\DriversUpdate\proxy-credential.xml'
-icacls 'C:\ProgramData\DriversUpdate\proxy-credential.xml' /inheritance:r /grant:r 'SYSTEM:F' 'Administrators:F'
-~~~
-
-> [!IMPORTANT]
-> Le fichier DPAPI est lié **au poste et au compte SYSTEM** : il ne peut pas être copié depuis un autre PC ou exporté sous un compte administrateur classique. Pour un déploiement massif, privilégiez un proxy permettant les flux Windows Update aux comptes machines, plutôt que des identifiants partagés copiés sur tout le parc.
-
-Le moteur effectue un **dump de WinHTTP** avant modification, définit le proxy avec netsh winhttp, puis tente aussi de renseigner le proxy de session Windows Update Agent lorsque l'API le permet. Avec des identifiants, il peut utiliser WINHTTP_OPTION_GLOBAL_PROXY_CREDS et sauvegarde la valeur initiale de ShareCredsWithWinHttp.
-
-À la fin (réussite ou erreur), le proxy WinHTTP et la valeur de registre sont restaurés. Après arrêt brutal, la **prochaine exécution** recherche les sauvegardes dans le répertoire state pour les restaurer avant toute nouvelle recherche. Une restauration échouée est signalée en erreur **103**, sans effacer les sauvegardes restantes. Ne lancez pas d'autre outil modifiant le proxy machine en parallèle.
-
-Pour un essai sans installation :
-
-~~~powershell
-powershell.exe -NoProfile -File .\force_update_drivers_gpo_hardened_proxy.ps1 -ScanOnly -Force
-netsh winhttp show proxy
-Get-Content "$env:ProgramData\DriversUpdate\logs\deploy.log" -Tail 60
-~~~
-
-Pour la GPO, déployez **les deux scripts** `force_update_drivers_gpo_hardened.ps1` et `force_update_drivers_gpo_hardened_proxy.ps1` dans le même dossier local, ainsi que `config.proxy.json`. La tâche SYSTEM lance **uniquement** le fichier se terminant par `_proxy.ps1`, par exemple :
+Copiez **uniquement** le fichier GPO sur les machines, dans un répertoire local réservé aux administrateurs, par exemple :
 
 ~~~text
--NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\DriversUpdate\force_update_drivers_gpo_hardened_proxy.ps1"
+C:\ProgramData\DriversUpdate\force_update_drivers_gpo_hardened.ps1
 ~~~
 
-Le lanceur proxy refuse de continuer si sa configuration manque ou si `Proxy.Mode` n'est pas `Temporary` (code 103). Le script GPO classique et l'interface manuelle restent disponibles sans changement de commande.
+Créez une tâche planifiée via GPO sous **NT AUTHORITY\SYSTEM**, avec les privilèges les plus élevés. Privilégiez un déclenchement différé après démarrage pour laisser le réseau et les services Windows Update se stabiliser.
 
-**Limites :** certaines versions de Windows ne prennent pas en charge Microsoft.Update.WebProxy ; le script continue alors avec WinHTTP. L'authentification du proxy et les transferts via BITS doivent être vérifiés sur un **poste pilote** (HTTP 407 / HRESULT en cas de refus). Les stratégies WSUS restent prioritaires.
+~~~text
+Programme : %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe
+Arguments : -NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\DriversUpdate\force_update_drivers_gpo_hardened.ps1"
+~~~
 
-## ⚙️ Exécution avancée
-
-Les commandes suivantes concernent le **moteur GPO**, et non la console à menu.
+Exécution pilote **sans téléchargement ni installation** :
 
 ~~~powershell
-# Audit sans installation ni téléchargement
-powershell.exe -NoProfile -File .\force_update_drivers_gpo_hardened.ps1 -ScanOnly
-
-# Simulation : même sélection que l'audit, résultat enregistré comme simulation
-powershell.exe -NoProfile -File .\force_update_drivers_gpo_hardened.ps1 -DryRun
-
-# Installation automatique de tous les pilotes éligibles (sans confirmation)
-powershell.exe -NoProfile -File .\force_update_drivers_gpo_hardened.ps1
-
-# Ignore uniquement le délai de 24 h, pas les stratégies ni les filtres
-powershell.exe -NoProfile -File .\force_update_drivers_gpo_hardened.ps1 -Force
+powershell.exe -NoProfile -File .\force_update_drivers_gpo_hardened.ps1 -ScanOnly -Force
 ~~~
 
-| Paramètre | Utilité |
-| :--- | :--- |
-| `-ScanOnly` | Recherche et filtre sans télécharger ni installer. |
-| `-DryRun` | Simulation sans télécharger ni installer. |
-| `-Interactive` | Sélection manuelle avec confirmation (console locale interactive uniquement). |
-| `-UserFacing` | Affichage destiné à l'utilisateur ; utilisé par le lanceur manuel. |
-| `-Force` | Ignore l'intervalle entre deux déploiements réussis. |
-| `-MinimumScanIntervalHours` | Intervalle de déploiement, **24 h** par défaut. |
-| `-ConfigPath` | Chemin du fichier JSON. |
-| `-LogRoot` / `-StateRoot` | Dossiers des journaux et de l'état. |
-| `-AcceptEula` | `$true` par défaut pour les installations éligibles. |
-| `-TemporaryMicrosoftUpdateService` | Paramètre historique accepté mais **ignoré** : le script n'enregistre pas Microsoft Update. |
+Options : -ScanOnly, -DryRun, -Force, -MinimumScanIntervalHours (24 h par défaut), -LogRoot, -StateRoot et -AcceptEula. Un mutex empêche les déploiements concurrents.
 
-En mode manuel, la confirmation `INSTALLER` intervient **avant** toute acceptation de licence, téléchargement ou installation. En mode automatique, l'installation suit les paramètres et les filtres sans demander d'avis à l'utilisateur.
+## Lancement manuel
 
-## 📋 Journaux et supervision
+Téléchargez **uniquement** [DriversUpdate-Manual.ps1](DriversUpdate-Manual.ps1) sur le poste. Depuis Windows PowerShell lancé en administrateur :
 
-Les données restent **locales** : aucun serveur de collecte ni télémétrie spécifique n'est ajouté par DriversUpdate.
+~~~powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\DriversUpdate-Manual.ps1
+~~~
+
+Menu disponible :
+
+~~~text
+[1] Rechercher les pilotes disponibles (sans installation)
+[2] Choisir les pilotes à installer (confirmation : INSTALLER)
+[3] Afficher le dernier bilan
+[4] Consulter le journal technique
+[0] Quitter
+~~~
+
+L'installation manuelle demande de **choisir les pilotes autorisés**, puis de confirmer explicitement avant tout téléchargement. Les pilotes exclus restent exclus.
+
+## Logs et supervision
+
+Les fichiers suivants sont générés **à l'exécution**, pas nécessaires au déploiement :
 
 ~~~text
 C:\ProgramData\DriversUpdate\
-├── config.json             # Filtres mode classique, facultatif
-├── config.proxy.json       # Configuration du lanceur proxy, facultatif
-├── proxy-credential.xml     # Optionnel, DPAPI local sous SYSTEM
 ├── logs\
-│   ├── deploy.log          # Journal courant
-│   └── deploy.log.1 à .3   # Archives
+│   └── deploy.log
 └── state\
-    └── state.json          # Dernier bilan, exploitable en supervision
+    ├── state.json
+    └── proxy\            # Sauvegarde temporaire WinHTTP ; récupération après interruption
 ~~~
 
-- **`deploy.log` :** logs détaillés, rotation à **5 Mo**, trois archives.
-- **`state.json` :** date, mode, source, résultat, pilotes détectés/installés, éventuel redémarrage et détail par pilote.
-- **Codes retour :** pour les tâches planifiées, GLPI, Zabbix ou d'autres outils d'exploitation.
-
 ~~~powershell
-# Consulter les 50 dernières lignes du journal
 Get-Content "$env:ProgramData\DriversUpdate\logs\deploy.log" -Tail 50
-
-# Lire l'état JSON pour une supervision
-Get-Content "$env:ProgramData\DriversUpdate\state\state.json" -Raw |
-    ConvertFrom-Json |
+Get-Content "$env:ProgramData\DriversUpdate\state\state.json" -Raw | ConvertFrom-Json |
     Select-Object LastOutcome, LastExitCode, UpdatesFound, UpdatesInstalled, RebootRequired
+netsh winhttp show proxy
 ~~~
 
-<details>
-<summary><strong>Voir les codes de retour</strong></summary>
+Codes retour principaux : 0 (succès / ignoré, consulter LastOutcome), 3010 (redémarrage requis, non automatique), 103 (configuration / prérequis), 110 (recherche), 120 (téléchargement), 130 (installation), 140 (partiel), 150 (exécution concurrente), 160 (stratégies contradictoires).
 
-| Code | Signification |
-| ---: | :--- |
-| **0** | Réussite, recherche seule, annulation volontaire ou opération ignorée ; consulter `LastOutcome`. |
-| **3010** | Installation terminée, **redémarrage nécessaire**. |
-| 100 / 101 / 102 | Version PowerShell non prise en charge / droits insuffisants / relance 64 bits impossible. |
-| 103 | Prérequis, configuration ou console interactive invalide. |
-| 110 / 120 / 130 | Échec de recherche / téléchargement / installation. |
-| 140 | Résultat partiel. |
-| 150 | Une autre exécution est déjà active. |
-| 160 | Conflit de stratégies Windows Update. |
-| 199 | Erreur inattendue. |
-
-</details>
-
-## 🔍 Diagnostic rapide
-
-| Symptôme | À vérifier |
-| :--- | :--- |
-| **Aucun pilote proposé** | Stratégies d'exclusion, source WSUS/WU, filtres JSON et connectivité de la machine. |
-| **Pilote indiqué « Exclu »** | Catégorie ou mot-clé protégé, interaction requise, licence ou liste d'autorisation. |
-| **L'interface refuse de démarrer** | Présence des deux fichiers dans le même dossier, console locale et droits administrateur. |
-| **Code 3010** | Planifier un redémarrage adapté au poste : aucun redémarrage automatique. |
-| **Messages techniques en anglais** | Normal dans `deploy.log` ; le menu et le bilan sont présentés en français. |
-
-## ✅ Tests et compatibilité
-
-Le workflow [PowerShell CI](.github/workflows/powershell-ci.yml) vérifie la **syntaxe des deux scripts**, les filtres et sélections, la gestion de l'état JSON, ainsi que les erreurs **PSScriptAnalyzer** sur **Windows PowerShell 5.1**.
+## Vérifications
 
 ~~~powershell
-# Exécuter les tests localement, sans installer de pilotes
-powershell.exe -NoProfile -File .\tests\validate.ps1
+.\tests\validate.ps1
 ~~~
 
-Ces tests utilisent des scénarios isolés : **ils ne prouvent pas l'installation réelle de pilotes via l'API COM Windows Update**. Un essai sur poste pilote reste indispensable avant le déploiement sur un parc.
+Les tests utilisent les fonctions Windows PowerShell (sans télécharger ni installer de pilotes). **Le comportement réel sous SYSTEM et avec proxy authentifié doit être vérifié sur un poste pilote** avant déploiement massif.
 
----
-
-<div align="center">
-
-**Pour les administrateurs qui veulent automatiser sans sacrifier la maîtrise.**
-
-Créé par [**neosoda**](https://github.com/neosoda) · [Licence MIT](LICENSE)
-
-[⭐ Soutenir le projet](https://github.com/neosoda/DriversUpdate/stargazers) · [🐛 Signaler un problème](https://github.com/neosoda/DriversUpdate/issues) · [🔧 Proposer une amélioration](https://github.com/neosoda/DriversUpdate/pulls)
-
-</div>
+Licence MIT.
