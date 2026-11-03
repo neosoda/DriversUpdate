@@ -386,7 +386,7 @@ function Set-DriverGlobalProxyCredentials {
     New-ItemProperty -Path $key -Name 'ShareCredsWithWinHttp' -PropertyType DWord -Value 1 -Force -ErrorAction Stop | Out-Null
 
     if (-not ('DriversUpdateWinHttpNative' -as [type])) {
-        Add-Type -TypeDefinition @'
+        Add-Type -ErrorAction Stop -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 public static class DriversUpdateWinHttpNative {
@@ -404,7 +404,7 @@ public static class DriversUpdateWinHttpNative {
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool WinHttpSetOption(IntPtr handle, UInt32 option, ref Credentials credentials, UInt32 length);
 }
-'@ -ErrorAction Stop
+'@
     }
 
     $parts = $Address.Split(':')
