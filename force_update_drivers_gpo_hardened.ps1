@@ -259,7 +259,7 @@ function Get-DriverConfiguration {
     }
     if (Test-Path -LiteralPath $ConfigPath -PathType Leaf) {
         $inputConfig = Get-Content -LiteralPath $ConfigPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-        foreach ($key in @($config.Keys)) {
+        foreach ($key in @('ExcludedDriverClasses', 'ExcludedTitleContains', 'IncludedTitleContains')) {
             $value = Get-PropertyOrNull -Object $inputConfig -Name $key
             if ($null -ne $value) {
                 if ($value -isnot [array]) { throw "$key must be an array in $ConfigPath" }
