@@ -42,6 +42,37 @@ if ($loadedConfig['IncludedTitleContains'].Count -ne 1) { throw 'Single-item con
 Remove-Item -LiteralPath $script:ConfigPath -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $script:LogFile -ErrorAction SilentlyContinue
 
+# Proxy SYSTEM : valider les options et refuser une configuration dangereuse.
+foreach ($name in @('Initialize-DriverProxy', 'Restore-DriverProxy', 'Protect-DriverProxyBackupDirectory', 'Set-DriverSessionProxy', 'Get-DriverProxyCredential', 'Set-DriverGlobalProxyCredentials')) {
+    if (-not $functions.ContainsKey($name)) { throw "Missing SYSTEM proxy function: $name" }
+}
+$script:ConfigPath = Join-Path $env:TEMP ('driversupdate-proxy-ci-' + [guid]::NewGuid().ToString('N') + '.json')
+try {
+    '{"Proxy":{"Mode":"Temporary","Address":"172.17.0.1:3128","BypassList":"<local>","CredentialFile":"","AuthenticationScheme":"Basic","UseWinHttpGlobalCredentials":true}}' |
+        Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
+    $proxyConfig = Get-DriverConfiguration
+    if ($proxyConfig['Proxy'].Mode -cne 'Temporary' -or $proxyConfig['Proxy'].Address -cne '172.17.0.1:3128') {
+        throw 'Valid SYSTEM proxy configuration was not preserved'
+    }
+    if ($proxyConfig['ExcludedDriverClasses'].Count -ne 5) { throw 'Proxy config must preserve safe driver exclusions' }
+
+    foreach ($badValue in @('{"Proxy":{"Mode":"Temporary","Address":"https://bad:3128"}}',
+                           '{"Proxy":{"Mode":"Temporary","Address":"proxy:99999"}}',
+                           '{"Proxy":{"Mode":"Temporary","Address":"proxy:3128","CredentialFile":"relative.xml"}}',
+                           '{"Proxy":{"Mode":"Unknown"}}',
+                           '{"Proxy":{"UseWinHttpGlobalCredentials":"true"}}',
+                           '{"Proxy":{"CredentialPassword":"plaintext"}}')) {
+        $badValue | Set-Content -LiteralPath $script:ConfigPath -Encoding UTF8
+        $rejected = $false
+        try { $null = Get-DriverConfiguration } catch { $rejected = $true }
+        if (-not $rejected) { throw "Unsafe proxy configuration accepted: $badValue" }
+    }
+} finally {
+    Remove-Item -LiteralPath $script:ConfigPath -ErrorAction SilentlyContinue
+}
+Write-Output 'PASS: SYSTEM proxy config, blocked plaintext credentials, validation and functions'
+
+
 function Get-ComPropertyValue { param($Object, [string]$Name) return $Object.$Name }
 function Get-PreviousState { return $script:FakeState }
 function Write-Log { param([string]$Level, [string]$Message) }
@@ -97,7 +128,7 @@ if ($manualErrors.Count -gt 0) {
     throw ("Manual script PowerShell syntax errors: " + ($manualErrors | ForEach-Object { $_.Message } | Out-String))
 }
 $entryPoints = @(Get-ChildItem -LiteralPath $root -Filter '*.ps1' -File | Select-Object -ExpandProperty Name | Sort-Object)
-$expectedEntryPoints = @('DriversUpdate-Manual.ps1', 'force_update_drivers_gpo_hardened.ps1')
+$expectedEntryPoints = @('DriversUpdate-Manual.ps1', 'force_update_drivers_gpo_hardened.ps1', 'force_update_drivers_gpo_hardened_proxy.ps1')
 if (($entryPoints -join ',') -cne ($expectedEntryPoints -join ',')) {
     throw "Expected exactly two root scripts. Found: $($entryPoints -join ', ')"
 }
@@ -135,7 +166,27 @@ try {
 } finally {
     Remove-Item -LiteralPath $script:ConfigPath -ErrorAction SilentlyContinue
 }
-Write-Output 'PASS: two entry points, interactive confirmation, invalid config rejection'
+Write-Output 'PASS: three entry points, interactive confirmation, invalid config rejection'
+
+# Le lanceur proxy doit reutiliser le moteur et imposer un fichier de
+# configuration dedie (sans recopier la logique des pilotes).
+$proxyLauncher = Join-Path $root 'force_update_drivers_gpo_hardened_proxy.ps1'
+$proxyTokens = $null
+$proxyErrors = $null
+$proxyAst = [System.Management.Automation.Language.Parser]::ParseFile($proxyLauncher, [ref]$proxyTokens, [ref]$proxyErrors)
+if ($proxyErrors.Count -gt 0) {
+    throw ("Proxy launcher syntax errors: " + ($proxyErrors | ForEach-Object { $_.Message } | Out-String))
+}
+$proxyLauncherText = $proxyAst.Extent.Text
+foreach ($token in @('config.proxy.json', "Proxy.Mode", "force_update_drivers_gpo_hardened.ps1", "MinimumScanIntervalHours", "AcceptEula")) {
+    if (-not $proxyLauncherText.Contains($token)) { throw "Proxy launcher missing: $token" }
+}
+if ($proxyLauncherText.Contains('Microsoft.Update.Session')) { throw 'Proxy launcher must delegate to the shared GPO engine' }
+$proxyExample = Get-Content -LiteralPath (Join-Path $root 'config.proxy.example.json') -Raw | ConvertFrom-Json -ErrorAction Stop
+if ($proxyExample.Proxy.Mode -cne 'Temporary') { throw 'Proxy example must explicitly enable Temporary mode' }
+if ($proxyExample.Proxy.CredentialFile -notlike 'C:\*') { throw 'Proxy example must use a local credential file' }
+Write-Output 'PASS: dedicated proxy launcher syntax, shared engine and example'
+
 
 # Exercise the atomic JSON state publication (create and replace) without COM or Windows Update.
 if (-not $functions.ContainsKey('Save-State')) {

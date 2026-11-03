@@ -1,5 +1,22 @@
 {
-  "ExcludedDriverClasses": ["Firmware", "Net", "SCSIAdapter", "HDC", "DiskDrive"],
-  "ExcludedTitleContains": ["BIOS", "Firmware"],
-  "IncludedTitleContains": []
+  "ExcludedDriverClasses": [
+    "Firmware",
+    "Net",
+    "SCSIAdapter",
+    "HDC",
+    "DiskDrive"
+  ],
+  "ExcludedTitleContains": [
+    "BIOS",
+    "Firmware"
+  ],
+  "IncludedTitleContains": [],
+  "Proxy": {
+    "Mode": "System",
+    "Address": "172.17.0.1:3128",
+    "BypassList": "<local>",
+    "CredentialFile": "",
+    "AuthenticationScheme": "Basic",
+    "UseWinHttpGlobalCredentials": true
+  }
 }

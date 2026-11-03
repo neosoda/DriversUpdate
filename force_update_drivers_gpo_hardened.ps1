@@ -18,7 +18,7 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
 $ScriptName = 'DriversUpdateGpo'
-$ScriptVersion = '2.0.0'
+$ScriptVersion = '2.1.0'
 
 $ExitCodes = @{
     Success = 0
@@ -43,6 +43,10 @@ $script:ScanSucceeded = $false
 $script:DriverResults = New-Object System.Collections.ArrayList
 $script:Configuration = $null
 $script:UpdateSource = 'Default'
+$script:ProxyBackupRoot = Join-Path -Path $StateRoot -ChildPath 'proxy'
+$script:ProxyBackupPath = Join-Path -Path $script:ProxyBackupRoot -ChildPath 'winhttp-before-driversupdate.txt'
+$script:ProxyRegistryBackupPath = Join-Path -Path $script:ProxyBackupRoot -ChildPath 'winhttp-registry-before-driversupdate.json'
+$script:ProxyRecoveryReady = $false
 
 function Initialize-LocalPath {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -246,10 +250,18 @@ function Get-DriverConfiguration {
         ExcludedDriverClasses = @('Firmware', 'Net', 'SCSIAdapter', 'HDC', 'DiskDrive')
         ExcludedTitleContains = @('BIOS', 'Firmware')
         IncludedTitleContains = @()
+        Proxy = [ordered]@{
+            Mode = 'System'
+            Address = ''
+            BypassList = '<local>'
+            CredentialFile = ''
+            AuthenticationScheme = 'Basic'
+            UseWinHttpGlobalCredentials = $true
+        }
     }
     if (Test-Path -LiteralPath $ConfigPath -PathType Leaf) {
         $inputConfig = Get-Content -LiteralPath $ConfigPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
-        foreach ($key in @($config.Keys)) {
+        foreach ($key in @('ExcludedDriverClasses', 'ExcludedTitleContains', 'IncludedTitleContains')) {
             $value = Get-PropertyOrNull -Object $inputConfig -Name $key
             if ($null -ne $value) {
                 if ($value -isnot [array]) { throw "$key must be an array in $ConfigPath" }
@@ -261,11 +273,236 @@ function Get-DriverConfiguration {
                 $config[$key] = @($value)
             }
         }
+        $proxyInput = Get-PropertyOrNull -Object $inputConfig -Name 'Proxy'
+        if ($null -ne $proxyInput) {
+            if ($proxyInput -isnot [pscustomobject]) { throw "Proxy must be an object in $ConfigPath" }
+            foreach ($property in $proxyInput.PSObject.Properties) {
+                if (-not $config['Proxy'].Contains($property.Name)) { throw "Unsupported Proxy setting: $($property.Name)" }
+                if ($property.Name -eq 'UseWinHttpGlobalCredentials') {
+                    if ($property.Value -isnot [bool]) { throw 'Proxy.UseWinHttpGlobalCredentials must be a boolean' }
+                } else {
+                    if ($property.Value -isnot [string]) { throw "Proxy.$($property.Name) must be a string" }
+                }
+                $config['Proxy'][$property.Name] = $property.Value
+            }
+            $proxy = $config['Proxy']
+            if ($proxy.Mode -notin @('System', 'Temporary')) { throw 'Proxy.Mode must be System or Temporary' }
+            if ($proxy.Mode -eq 'Temporary') {
+                if (-not ($proxy.Address -match '^([A-Za-z0-9.-]+):([0-9]{1,5})$')) {
+                    throw 'Proxy.Address must contain a host or IPv4 address and port, without credentials or scheme'
+                }
+                $portNumber = [int]$Matches[2]
+                if ($portNumber -lt 1 -or $portNumber -gt 65535) { throw 'Proxy port must be between 1 and 65535' }
+                if ($proxy.AuthenticationScheme -notin @('Basic', 'NTLM', 'Negotiate', 'Digest')) {
+                    throw 'Unsupported Proxy.AuthenticationScheme'
+                }
+                if ($proxy.CredentialFile -and -not [IO.Path]::IsPathRooted($proxy.CredentialFile)) {
+                    throw 'Proxy.CredentialFile must be an absolute local path'
+                }
+                if ($proxy.CredentialFile -and $proxy.CredentialFile.StartsWith('\\')) {
+                    throw 'Proxy.CredentialFile must be local (DPAPI per computer)'
+                }
+            }
+        }
         Write-Log -Message "Loaded driver filters from $ConfigPath"
     } else {
         Write-Log -Message 'Using built-in driver safety filters.'
     }
     return $config
+}
+
+
+# Le mode System utilise WinHTTP deja configure sur l'ordinateur.
+# Le mode Temporary remplace WinHTTP le temps du traitement et restaure son etat.
+function Protect-DriverProxyBackupDirectory {
+    # netsh exec lit un script. Seuls SYSTEM et les administrateurs doivent
+    # pouvoir modifier une sauvegarde executee avec des privileges eleves.
+    Initialize-LocalPath -Path $script:ProxyBackupRoot
+    $acl = Get-Acl -LiteralPath $script:ProxyBackupRoot -ErrorAction Stop
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($existing in @($acl.Access)) {
+        [void]$acl.RemoveAccessRuleSpecific($existing)
+    }
+    $inherit = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    foreach ($sidText in @('S-1-5-18', 'S-1-5-32-544')) {
+        $sid = [Security.Principal.SecurityIdentifier]::new($sidText)
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+            $sid,
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            $inherit,
+            [Security.AccessControl.PropagationFlags]::None,
+            [Security.AccessControl.AccessControlType]::Allow
+        )
+        $acl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $script:ProxyBackupRoot -AclObject $acl -ErrorAction Stop
+    $script:ProxyRecoveryReady = $true
+}
+
+function Invoke-DriversNetsh {
+    param([Parameter(Mandatory = $true)][string[]]$Arguments)
+    $output = @(& netsh.exe @Arguments 2>&1)
+    if ($LASTEXITCODE -ne 0) {
+        throw ("netsh {0} a echoue (code {1}): {2}" -f ($Arguments -join ' '), $LASTEXITCODE, ($output -join ' '))
+    }
+    return ($output -join [Environment]::NewLine)
+}
+
+function Restore-DriverProxy {
+    $restoredWinHttp = $true
+    $restoredRegistry = $true
+
+    if (Test-Path -LiteralPath $script:ProxyBackupPath -PathType Leaf) {
+        try {
+            $null = Invoke-DriversNetsh -Arguments @('exec', $script:ProxyBackupPath)
+            Write-Log -Message 'Configuration WinHTTP precedente restauree.'
+            Remove-Item -LiteralPath $script:ProxyBackupPath -Force -ErrorAction Stop
+        } catch {
+            $restoredWinHttp = $false
+            Write-Log -Level 'ERROR' -Message "Echec restauration WinHTTP: $($_.Exception.Message)"
+        }
+    }
+
+    if (Test-Path -LiteralPath $script:ProxyRegistryBackupPath -PathType Leaf) {
+        try {
+            $saved = Get-Content -LiteralPath $script:ProxyRegistryBackupPath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+            $key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings'
+            if ($saved.Existed) {
+                New-ItemProperty -Path $key -Name 'ShareCredsWithWinHttp' -PropertyType DWord -Value ([int]$saved.Value) -Force -ErrorAction Stop | Out-Null
+            } else {
+                Remove-ItemProperty -Path $key -Name 'ShareCredsWithWinHttp' -ErrorAction SilentlyContinue
+            }
+            Remove-Item -LiteralPath $script:ProxyRegistryBackupPath -Force -ErrorAction Stop
+            Write-Log -Message 'Parametre WinHTTP des identifiants restaure.'
+        } catch {
+            $restoredRegistry = $false
+            Write-Log -Level 'ERROR' -Message "Echec restauration registre WinHTTP: $($_.Exception.Message)"
+        }
+    }
+    if (-not ($restoredWinHttp -and $restoredRegistry)) {
+        throw 'Restauration proxy incomplete. Fichiers de sauvegarde conserves dans le repertoire state.'
+    }
+}
+
+function Get-DriverProxyCredential {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "Fichier d'identifiants proxy introuvable : $Path"
+    }
+    # Export-Clixml protege le mot de passe via DPAPI pour le compte ET la machine.
+    # Un fichier cree sous un compte utilisateur n'est pas lisible par SYSTEM.
+    $credential = Import-Clixml -LiteralPath $Path -ErrorAction Stop
+    if ($credential -isnot [System.Management.Automation.PSCredential]) {
+        throw "Le fichier $Path ne contient pas un PSCredential."
+    }
+    return $credential
+}
+
+function Set-DriverGlobalProxyCredentials {
+    param(
+        [Parameter(Mandatory = $true)][pscredential]$Credential,
+        [Parameter(Mandatory = $true)][string]$Address,
+        [Parameter(Mandatory = $true)][string]$Scheme
+    )
+
+    $key = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings'
+    $previous = Get-RegistryValueOrNull -Path $key -Name 'ShareCredsWithWinHttp'
+    $registryState = [ordered]@{ Existed = ($null -ne $previous); Value = $previous }
+    # La sauvegarde precede imperativement la modification de la cle.
+    $registryState | ConvertTo-Json -Compress | Set-Content -LiteralPath $script:ProxyRegistryBackupPath -Encoding UTF8 -ErrorAction Stop
+    New-ItemProperty -Path $key -Name 'ShareCredsWithWinHttp' -PropertyType DWord -Value 1 -Force -ErrorAction Stop | Out-Null
+
+    if (-not ('DriversUpdateWinHttpNative' -as [type])) {
+        Add-Type -ErrorAction Stop -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class DriversUpdateWinHttpNative {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+    public struct Credentials {
+        [MarshalAs(UnmanagedType.LPStr)] public string UserName;
+        [MarshalAs(UnmanagedType.LPStr)] public string Password;
+        [MarshalAs(UnmanagedType.LPStr)] public string Realm;
+        public UInt32 AuthScheme;
+        [MarshalAs(UnmanagedType.LPStr)] public string HostName;
+        public UInt32 Port;
+        [MarshalAs(UnmanagedType.LPStr)] public string Url;
+    }
+    [DllImport("winhttp.dll", SetLastError = true, CharSet = CharSet.Ansi)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool WinHttpSetOption(IntPtr handle, UInt32 option, ref Credentials credentials, UInt32 length);
+}
+'@
+    }
+
+    $parts = $Address.Split(':')
+    $schemeValue = switch ($Scheme) {
+        'Basic' { 1 }
+        'NTLM' { 2 }
+        'Negotiate' { 16 }
+        'Digest' { 8 }
+    }
+    $native = New-Object DriversUpdateWinHttpNative+Credentials
+    $native.UserName = $Credential.UserName
+    $native.Password = $Credential.GetNetworkCredential().Password
+    $native.AuthScheme = [uint32]$schemeValue
+    $native.HostName = $parts[0]
+    $native.Port = [uint32][int]$parts[1]
+    $length = [Runtime.InteropServices.Marshal]::SizeOf($native)
+
+    # 97 = WINHTTP_OPTION_GLOBAL_PROXY_CREDS. Aucune valeur n'est ecrite au journal.
+    $success = [DriversUpdateWinHttpNative]::WinHttpSetOption([IntPtr]::Zero, [uint32]97, [ref]$native, [uint32]$length)
+    $native.Password = $null
+    if (-not $success) {
+        $win32 = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        throw "Injection des identifiants WinHTTP impossible (Win32=$win32)."
+    }
+    Write-Log -Message "Identifiants proxy WinHTTP transmis ($Scheme)."
+}
+
+function Initialize-DriverProxy {
+    $proxy = $script:Configuration['Proxy']
+    if ($proxy.Mode -ne 'Temporary') {
+        Write-Log -Message 'Proxy : configuration WinHTTP machine existante conservee.'
+        return
+    }
+
+    $credential = $null
+    if ($proxy.CredentialFile) {
+        # Echouer AVANT la modification globale si le fichier DPAPI est illisible.
+        $credential = Get-DriverProxyCredential -Path $proxy.CredentialFile
+    }
+
+    # Fichier persistant permettant la recuperation au prochain lancement
+    # apres interruption brutale (seul le mutex de ce script protege ses executions).
+    $dump = Invoke-DriversNetsh -Arguments @('winhttp', 'dump')
+    if ([string]::IsNullOrWhiteSpace($dump)) { throw 'Sauvegarde WinHTTP vide.' }
+    Set-Content -LiteralPath $script:ProxyBackupPath -Value $dump -Encoding ASCII -ErrorAction Stop
+    Write-Log -Message "Proxy WinHTTP temporaire : $($proxy.Address)."
+    $arguments = @('winhttp', 'set', 'proxy', "proxy-server=$($proxy.Address)")
+    if ($proxy.BypassList) { $arguments += "bypass-list=$($proxy.BypassList)" }
+    $null = Invoke-DriversNetsh -Arguments $arguments
+
+    if ($null -ne $credential -and $proxy.UseWinHttpGlobalCredentials) {
+        Set-DriverGlobalProxyCredentials -Credential $credential -Address $proxy.Address -Scheme $proxy.AuthenticationScheme
+    }
+    $script:ProxyCredential = $credential
+}
+
+function Set-DriverSessionProxy {
+    param([Parameter(Mandatory = $true)]$Session)
+    $proxy = $script:Configuration['Proxy']
+    if ($proxy.Mode -ne 'Temporary') { return }
+
+    $webProxy = New-Object -ComObject Microsoft.Update.WebProxy
+    $webProxy.Address = $proxy.Address
+    $webProxy.AutoDetect = $false
+    $webProxy.BypassProxyOnLocal = ($proxy.BypassList -match '(^|;)<local>(;|$)')
+    if ($null -ne $script:ProxyCredential) {
+        $webProxy.UserName = $script:ProxyCredential.UserName
+        $webProxy.SetPassword($script:ProxyCredential.GetNetworkCredential().Password)
+    }
+    $Session.WebProxy = $webProxy
+    Write-Log -Message 'Proxy Windows Update Agent configure pour la session SYSTEM.'
 }
 
 function Get-DriverExclusionReason {
@@ -597,6 +834,12 @@ function Invoke-DriverUpdateDeployment {
         }
 
         Write-WindowsUpdatePolicySummary
+        # Restaurer d'abord WinHTTP, meme si la configuration a ete supprimee ou corrompue.
+        try { Protect-DriverProxyBackupDirectory; Restore-DriverProxy }
+        catch {
+            Save-State -ExitCode $ExitCodes.PrerequisiteFailed -Outcome 'ProxyRestoreFailed'
+            return $ExitCodes.PrerequisiteFailed
+        }
         if ($TemporaryMicrosoftUpdateService) { Write-Log -Level 'WARN' -Message 'Deprecated switch ignored: V2 does not register Microsoft Update.' }
         try { $script:Configuration = Get-DriverConfiguration }
         catch { Write-Log -Level 'ERROR' -Message "Invalid configuration: $($_.Exception.Message)"; Save-State -ExitCode $ExitCodes.PrerequisiteFailed -Outcome 'InvalidConfig'; return $ExitCodes.PrerequisiteFailed }
@@ -623,8 +866,22 @@ function Invoke-DriverUpdateDeployment {
         }
 
         try {
+            Initialize-DriverProxy
+        } catch {
+            Write-Log -Level 'ERROR' -Message "Initialisation du proxy impossible: $($_.Exception.Message)"
+            Save-State -ExitCode $ExitCodes.PrerequisiteFailed -Outcome 'ProxySetupFailed'
+            return $ExitCodes.PrerequisiteFailed
+        }
+
+        try {
             $session = New-Object -ComObject Microsoft.Update.Session
             $session.ClientApplicationID = $ScriptName
+            # IWebProxy n'est pas pris en charge dans toutes les versions de Windows.
+            # Le proxy WinHTTP machine reste la voie principale, y compris sous SYSTEM.
+            try { Set-DriverSessionProxy -Session $session }
+            catch {
+                Write-Log -Level 'WARN' -Message "Proxy WUA indisponible, utilisation de WinHTTP: $($_.Exception.Message)"
+            }
 
             $searcher = $session.CreateUpdateSearcher()
             $searcher.SearchScope = 1
@@ -856,6 +1113,7 @@ function Invoke-DriverUpdateDeployment {
 
 $mutex = $null
 $lockAcquired = $false
+$exitCode = $ExitCodes.PrerequisiteFailed
 try {
     Initialize-LocalPath -Path $LogRoot
     Initialize-LocalPath -Path $StateRoot
@@ -864,21 +1122,34 @@ try {
         $mutex = New-Object System.Threading.Mutex($false, 'Global\DriversUpdateGpo')
         try { $lockAcquired = $mutex.WaitOne(0) }
         catch [System.Threading.AbandonedMutexException] { $lockAcquired = $true }
-        if (-not $lockAcquired) {
-            Write-Output 'DriversUpdate: another execution is already active.'
-            exit $ExitCodes.ConcurrentRun
+    }
+    if ($null -ne $mutex -and -not $lockAcquired) {
+        Write-Output 'DriversUpdate: another execution is already active.'
+        $exitCode = $ExitCodes.ConcurrentRun
+    } else {
+        if ($lockAcquired) {
+            try { Rotate-Log } catch { Write-Output "Log rotation warning: $($_.Exception.Message)" }
         }
+        $exitCode = Invoke-DriverUpdateDeployment
     }
-    if ($lockAcquired) {
-        try { Rotate-Log } catch { Write-Output "Log rotation warning: $($_.Exception.Message)" }
-    }
-    $exitCode = Invoke-DriverUpdateDeployment
-    Write-Log -Message "Exit code: $exitCode"
-    exit $exitCode
 } catch {
     Write-Output "DriversUpdate startup error: $($_.Exception.Message)"
-    exit $ExitCodes.PrerequisiteFailed
+    $exitCode = $ExitCodes.PrerequisiteFailed
 } finally {
+    # Restaurer meme si recherche/telechargement/installation a echoue.
+    # Ne jamais modifier l'etat du proxy lorsqu'un autre lancement detient le mutex.
+    if ($lockAcquired -and $script:ProxyRecoveryReady) {
+        try { Restore-DriverProxy }
+        catch {
+            Write-Output "DriversUpdate proxy restoration failed: $($_.Exception.Message)"
+            $exitCode = $ExitCodes.PrerequisiteFailed
+            try { Save-State -ExitCode $exitCode -Outcome 'ProxyRestoreFailed' }
+            catch { Write-Output "DriversUpdate state write failed: $($_.Exception.Message)" }
+        }
+    }
+    $script:ProxyCredential = $null
     if ($lockAcquired -and $null -ne $mutex) { $mutex.ReleaseMutex() }
     if ($null -ne $mutex) { $mutex.Dispose() }
 }
+Write-Log -Message "Exit code: $exitCode"
+exit $exitCode

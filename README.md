@@ -11,7 +11,7 @@
 
 ### Des pilotes Windows à jour. Sans perdre le contrôle.
 
-**Un moteur Windows Update, deux façons de l'utiliser :** une console manuelle claire, entièrement en français, et un déploiement automatisé par GPO.
+**Un moteur Windows Update, trois lancements :** console manuelle, GPO classique et GPO avec proxy sous SYSTEM.
 
 **Aucun module tiers · Stratégies Windows Update/WSUS respectées · Aucun redémarrage automatique**
 
@@ -26,9 +26,10 @@
 | Script | Pour qui ? | Comportement |
 | :--- | :--- | :--- |
 | **[DriversUpdate-Manual.ps1](DriversUpdate-Manual.ps1)** | Technicien, administrateur, intervention sur un poste | Console **en français**, recherche, choix individuel des pilotes, confirmation avant installation et bilan lisible. |
-| **[force_update_drivers_gpo_hardened.ps1](force_update_drivers_gpo_hardened.ps1)** | Parc informatique, GPO, tâche planifiée, compte SYSTEM | Moteur **sans interaction**, pilotable par paramètres, logs, état JSON et codes retour. |
+| **[force_update_drivers_gpo_hardened.ps1](force_update_drivers_gpo_hardened.ps1)** | Parc informatique, GPO classique, compte SYSTEM | Moteur **sans interaction** ; utilise la configuration proxy machine existante par défaut. |
+| **[force_update_drivers_gpo_hardened_proxy.ps1](force_update_drivers_gpo_hardened_proxy.ps1)** | GPO, compte SYSTEM, réseau derrière un proxy | Lanceur distinct qui exige une configuration proxy et réutilise le moteur GPO commun. |
 
-**Il n'y a que deux scripts de lancement.** Le mode manuel appelle le même moteur que la GPO : pas de logique d'installation dupliquée.
+**Trois points d'entrée, un seul moteur.** Les lanceurs manuel et proxy délèguent au script GPO commun : aucune logique d'installation de pilotes dupliquée.
 
 > [!IMPORTANT]
 > Le moteur peut installer des pilotes sans confirmation lorsqu'il est lancé directement en mode automatique. **Pour intervenir manuellement sur un poste, utilisez `DriversUpdate-Manual.ps1`.** Validez les installations sur un poste pilote avant toute généralisation.
@@ -183,6 +184,62 @@ La configuration est **facultative**. Pour modifier les filtres, copiez [config.
 > [!CAUTION]
 > Dans le JSON, un tableau vide **remplace** le filtre par défaut correspondant : `"ExcludedDriverClasses": []` supprime donc les exclusions de classes. À n'utiliser qu'après validation.
 
+## 🌐 Proxy pour GPO / SYSTEM (sans utilisateur connecté)
+
+DriversUpdate peut utiliser un **proxy machine temporaire**, sans dépendre du proxy WinINet de l'utilisateur connecté. C'est notamment utile pour une tâche planifiée GPO exécutée sous SYSTEM. Par défaut, **Proxy.Mode = System** ne modifie rien et utilise la configuration WinHTTP existante.
+
+Pour une exécution sous proxy, copiez **[config.proxy.example.json](config.proxy.example.json)** vers `C:\ProgramData\DriversUpdate\config.proxy.json`, puis adaptez l'adresse et les paramètres d'authentification. Gardez le fichier `config.json` pour le mode classique :
+
+~~~json
+{
+  "Proxy": {
+    "Mode": "Temporary",
+    "Address": "172.17.0.1:3128",
+    "BypassList": "<local>",
+    "CredentialFile": "C:\\ProgramData\\DriversUpdate\\proxy-credential.xml",
+    "AuthenticationScheme": "Basic",
+    "UseWinHttpGlobalCredentials": true
+  }
+}
+~~~
+
+Les filtres absents de ce JSON conservent leurs valeurs protectrices par défaut. L'adresse est un **hôte:port** sans préfixe HTTP, sans identifiant. BypassList utilise la syntaxe WinHTTP (valeur local, liste séparée par des points-virgules). Si le proxy **n'exige pas d'identifiant**, renseignez une chaîne vide pour CredentialFile.
+
+**Avec authentification :** les identifiants ne doivent figurer **ni dans le script, ni dans le JSON, ni dans SYSVOL**. Créez un PSCredential protégé par DPAPI **localement, sous le compte SYSTEM de chaque poste**. Exemple, depuis une console administrateur utilisant PsExec (Sysinternals) :
+
+~~~powershell
+psexec.exe -i -s powershell.exe -NoProfile
+# Dans la console SYSTEM qui s'ouvre (et non dans une session administrateur ordinaire) :
+New-Item -ItemType Directory -Force 'C:\ProgramData\DriversUpdate' | Out-Null
+Get-Credential | Export-Clixml 'C:\ProgramData\DriversUpdate\proxy-credential.xml'
+icacls 'C:\ProgramData\DriversUpdate\proxy-credential.xml' /inheritance:r /grant:r 'SYSTEM:F' 'Administrators:F'
+~~~
+
+> [!IMPORTANT]
+> Le fichier DPAPI est lié **au poste et au compte SYSTEM** : il ne peut pas être copié depuis un autre PC ou exporté sous un compte administrateur classique. Pour un déploiement massif, privilégiez un proxy permettant les flux Windows Update aux comptes machines, plutôt que des identifiants partagés copiés sur tout le parc.
+
+Le moteur effectue un **dump de WinHTTP** avant modification, définit le proxy avec netsh winhttp, puis tente aussi de renseigner le proxy de session Windows Update Agent lorsque l'API le permet. Avec des identifiants, il peut utiliser WINHTTP_OPTION_GLOBAL_PROXY_CREDS et sauvegarde la valeur initiale de ShareCredsWithWinHttp.
+
+À la fin (réussite ou erreur), le proxy WinHTTP et la valeur de registre sont restaurés. Après arrêt brutal, la **prochaine exécution** recherche les sauvegardes dans le répertoire state pour les restaurer avant toute nouvelle recherche. Une restauration échouée est signalée en erreur **103**, sans effacer les sauvegardes restantes. Ne lancez pas d'autre outil modifiant le proxy machine en parallèle.
+
+Pour un essai sans installation :
+
+~~~powershell
+powershell.exe -NoProfile -File .\force_update_drivers_gpo_hardened_proxy.ps1 -ScanOnly -Force
+netsh winhttp show proxy
+Get-Content "$env:ProgramData\DriversUpdate\logs\deploy.log" -Tail 60
+~~~
+
+Pour la GPO, déployez **les deux scripts** `force_update_drivers_gpo_hardened.ps1` et `force_update_drivers_gpo_hardened_proxy.ps1` dans le même dossier local, ainsi que `config.proxy.json`. La tâche SYSTEM lance **uniquement** le fichier se terminant par `_proxy.ps1`, par exemple :
+
+~~~text
+-NoProfile -ExecutionPolicy Bypass -File "C:\ProgramData\DriversUpdate\force_update_drivers_gpo_hardened_proxy.ps1"
+~~~
+
+Le lanceur proxy refuse de continuer si sa configuration manque ou si `Proxy.Mode` n'est pas `Temporary` (code 103). Le script GPO classique et l'interface manuelle restent disponibles sans changement de commande.
+
+**Limites :** certaines versions de Windows ne prennent pas en charge Microsoft.Update.WebProxy ; le script continue alors avec WinHTTP. L'authentification du proxy et les transferts via BITS doivent être vérifiés sur un **poste pilote** (HTTP 407 / HRESULT en cas de refus). Les stratégies WSUS restent prioritaires.
+
 ## ⚙️ Exécution avancée
 
 Les commandes suivantes concernent le **moteur GPO**, et non la console à menu.
@@ -222,7 +279,9 @@ Les données restent **locales** : aucun serveur de collecte ni télémétrie sp
 
 ~~~text
 C:\ProgramData\DriversUpdate\
-├── config.json             # Facultatif
+├── config.json             # Filtres mode classique, facultatif
+├── config.proxy.json       # Configuration du lanceur proxy, facultatif
+├── proxy-credential.xml     # Optionnel, DPAPI local sous SYSTEM
 ├── logs\
 │   ├── deploy.log          # Journal courant
 │   └── deploy.log.1 à .3   # Archives
