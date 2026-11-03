@@ -65,7 +65,7 @@ Write-Output 'PASS: UAC elevation, no extra launcher, guard against non-interact
 
 if ($manualText.Contains('Invoke-Expression')) { throw 'Do not evaluate external scripts' }
 if (-not $manualText.Contains('Rechercher les pilotes disponibles') -or
-    -not $manualText.Contains('Choisir les pilotes') -or
+    -not $manualText.Contains('Cocher les pilotes') -or
     -not $manualText.Contains("Tapez INSTALLER")) {
     throw 'The manual script must retain selection and explicit confirmation'
 }

@@ -148,13 +148,35 @@ Si les droits administrateur sont déjà présents, aucune deuxième fenêtre n'
 ========================================================
 
  [1] Rechercher les pilotes disponibles
- [2] Choisir les pilotes à installer
+ [2] Cocher les pilotes à installer
  [3] Afficher le dernier bilan
  [4] Consulter le journal technique
  [0] Quitter
 ~~~
 
-Le mode manuel affiche les pilotes et leurs exclusions. Pour installer, il faut **choisir les pilotes autorisés puis saisir INSTALLER** : sans cette confirmation, aucun pilote n'est téléchargé pour l'installation. Ce mode ne doit pas être lancé en tant que SYSTEM.
+### Cocher et installer les pilotes
+
+Après avoir choisi **2**, la recherche Windows Update affiche tous les pilotes trouvés sous forme de liste à cocher :
+
+~~~text
+  [ ] 1. AOC International - Monitor
+  [ ] 2. Dell Firmware Driver Update
+      ! Pilote sensible : firmware
+  [ ] 3. ASIX Net Driver Update
+      ! Pilote sensible : réseau
+
+  Numéro = cocher/décocher  |  T = tout cocher
+  A = tout décocher        |  V = vérifier et valider
+  0 = annuler
+~~~
+
+Tapez **1** pour cocher le moniteur : il devient **[x]**. Tapez **3** pour cocher également le pilote ASIX. Vous pouvez saisir **1,3** pour basculer plusieurs cases d'un coup.
+
+Tapez ensuite **V** pour voir le récapitulatif, puis **INSTALLER** pour démarrer le téléchargement et l'installation des pilotes sélectionnés. Les pilotes sensibles (réseau, firmware, stockage) nécessitent une confirmation supplémentaire : **RISQUES**, avant **INSTALLER**.
+
+**Différence importante avec la GPO :** en mode manuel uniquement, les pilotes avec `CanRequestUserInput = true` sont proposés, même s'ils sont exclus du déploiement automatique. Cela signifie que le programme d'installation *peut* demander une intervention, **pas** qu'il fonctionnera nécessairement : Windows Update peut encore refuser une installation interactive, notamment dans certains contextes « Exécuter en tant que ». Les pilotes sensibles sont signalés pour permettre une décision explicite. [Documentation Microsoft sur le comportement d'installation](https://learn.microsoft.com/en-us/windows/win32/wua_sdk/iinstallationbehavior-properties).
+
+Aucun téléchargement de pilote sélectionné n'est lancé avant confirmation. **Le script manuel ne doit pas être exécuté sous SYSTEM.**
 
 ## 📋 Diagnostic et journaux
 
