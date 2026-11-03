@@ -684,10 +684,15 @@ function Get-ManualDriverWarnings {
 function Write-ManualDriverChecklist {
     param(
         [Parameter(Mandatory = $true)]$Updates,
-        [int[]]$SelectedNumbers = @()
+        [int[]]$SelectedNumbers = @(),
+        [switch]$PreviewOnly
     )
     Write-Host ''
-    Write-Host '  ÉTAPE 2/3 - COCHER LES PILOTES À INSTALLER' -ForegroundColor Cyan
+    if ($PreviewOnly) {
+        Write-Host '  PILOTES DÉTECTÉS - RECHERCHE SEULE' -ForegroundColor Cyan
+    } else {
+        Write-Host '  ÉTAPE 2/3 - COCHER LES PILOTES À INSTALLER' -ForegroundColor Cyan
+    }
     Write-Host '  --------------------------------------------------------' -ForegroundColor DarkGray
     $availableCount = 0
     for ($index = 0; $index -lt $Updates.Count; $index++) {
@@ -714,8 +719,12 @@ function Write-ManualDriverChecklist {
     }
     Write-Host '  --------------------------------------------------------' -ForegroundColor DarkGray
     Write-Host ("  Sélection : {0} / {1} pilote(s) disponible(s)." -f $SelectedNumbers.Count, $availableCount) -ForegroundColor Cyan
-    Write-Host '  Numéro = cocher/décocher | 1,3 = plusieurs | T = tout cocher' -ForegroundColor Gray
-    Write-Host '  A = tout décocher | V = vérifier et valider | 0 = annuler' -ForegroundColor Gray
+    if ($PreviewOnly) {
+        Write-Host '  Recherche uniquement. Choisissez le menu 2 pour cocher des pilotes.' -ForegroundColor Gray
+    } else {
+        Write-Host '  Numéro = cocher/décocher | 1,3 = plusieurs | T = tout cocher' -ForegroundColor Gray
+        Write-Host '  A = tout décocher | V = vérifier et valider | 0 = annuler' -ForegroundColor Gray
+    }
 }
 
 function Read-InteractiveDriverChoice {
@@ -1059,7 +1068,7 @@ function Invoke-DriverUpdateDeployment {
         }
 
         if ($UserFacing -and ($ScanOnly -or $DryRun)) {
-            $null = Write-DriverOverview -Updates $updates
+            Write-ManualDriverChecklist -Updates $updates -SelectedNumbers @() -PreviewOnly
             Write-Host "  Recherche terminée : aucun téléchargement, aucune installation." -ForegroundColor Green
         }
         $interactiveSelectedIndices = $null
