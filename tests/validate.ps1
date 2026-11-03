@@ -51,6 +51,18 @@ foreach ($src in @($gpoText, $manualText)) {
         throw 'A standalone script still depends on external configuration or PS1'
     }
 }
+# Le lanceur manuel demande une elevation seulement en mode interactif.
+if (-not $manualText.Contains('Start-Process -FilePath $powerShellExe') -or
+    -not $manualText.Contains('-Verb RunAs -ErrorAction Stop') -or
+    -not $manualText.Contains('if (-not (Test-IsAdministrator))')) {
+    throw 'Automatic UAC elevation is missing from the manual entry point'
+}
+if ($manualText.IndexOf('Start-Process -FilePath $powerShellExe') -gt
+    $manualText.IndexOf('function Invoke-StandaloneDriverEngine')) {
+    throw 'UAC elevation must occur before launching the driver engine'
+}
+Write-Output 'PASS: UAC elevation, no extra launcher, guard against non-interactive use'
+
 if ($manualText.Contains('Invoke-Expression')) { throw 'Do not evaluate external scripts' }
 if (-not $manualText.Contains('Rechercher les pilotes disponibles') -or
     -not $manualText.Contains('Choisir les pilotes') -or
